@@ -1005,14 +1005,27 @@ else:
     # Insight 4: Employer match
     if employer_match > 0:
         employer_contribution = base_salary * (employer_match / 100)
-        insights.append({
-            "icon": "🎁",
-            "title": "Free Money: Employer Match",
-            "message": f"Your employer is contributing ${employer_contribution:,.0f} annually ({employer_match}% match). "
-                      f"This is a {employer_match*100:.0f}% instant return on your contributions. "
-                      f"Always maximize employer matching contributions first.",
-            "priority": "high"
-        })
+        employee_contribution = base_salary * (biweekly_pct / 100)
+        
+        if employee_contribution > 0:
+            instant_return_pct = (employer_contribution / employee_contribution) * 100
+            insights.append({
+                "icon": "🎁",
+                "title": "Free Money: Employer Match",
+                "message": f"Your employer is contributing ${employer_contribution:,.0f} annually ({employer_match}% match). "
+                          f"This represents a **{instant_return_pct:.1f}% instant return** on your ${employee_contribution:,.0f} contribution. "
+                          f"Employer matching is the single best investment return available - always maximize it first.",
+                "priority": "high"
+            })
+        else:
+            insights.append({
+                "icon": "🎁",
+                "title": "Free Money: Employer Match Available",
+                "message": f"Your employer offers a {employer_match}% match (${employer_contribution:,.0f} potential free money). "
+                          f"You're currently not contributing, so you're leaving this free money on the table. "
+                          f"Start contributing to claim this benefit.",
+                "priority": "high"
+            })
     
     # Insight 5: Efficiency score
     efficiency_score = (total_rrsp_contributions / max(1, rrsp_room)) * 0.5 + \
