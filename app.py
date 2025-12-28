@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-import altair as alt
+import alt as alt
 import json
 import os
 import streamlit.components.v1 as components
@@ -65,29 +65,8 @@ def description_box(title, content):
 # --- 4. PAGE: HOME ---
 if st.session_state.current_page == "Home":
     st.title("🏠 Strategy Dashboard")
+    description_box("System Overview", "Welcome to your multi-year financial command center. Select a year tile to manage specific strategies. The dashboard below tracks your aggregate progress across multiple tax years.")
     
-    # CALCULATE AGGREGATE METRICS
-    total_lifetime_refunds = 0
-    total_rrsp_room_left = 0
-    total_tfsa_room_left = 0
-    
-    if all_history:
-        for yr, data in all_history.items():
-            # Refund calc
-            annual_rrsp = (data.get('base_salary', 0) * (data.get('biweekly_pct', 0) + data.get('employer_match', 0)) / 100) + data.get('rrsp_lump_sum', 0)
-            total_lifetime_refunds += (annual_rrsp * 0.46)
-            # Room calc
-            total_rrsp_room_left += max(0, data.get('rrsp_room', 0) - annual_rrsp)
-            total_tfsa_room_left += max(0, data.get('tfsa_room', 0) - data.get('tfsa_lump_sum', 0))
-
-    c_top1, c_top2, c_top3 = st.columns([2, 1, 1])
-    with c_top1:
-        description_box("System Overview", "Welcome to your multi-year financial command center. Select a year tile to manage specific strategies.")
-    with c_top2:
-        st.metric("Total Tax Reclaimed", f"${total_lifetime_refunds:,.0f}")
-    with c_top3:
-        st.metric("Aggregate Room (R+T)", f"${(total_rrsp_room_left + total_tfsa_room_left):,.0f}")
-
     st.subheader("📅 Planning Years")
     cols = st.columns(4)
     years_to_show = list(range(2024, 2030))
@@ -102,22 +81,18 @@ if st.session_state.current_page == "Home":
 
     if all_history:
         st.divider()
-        st.subheader("🏦 Registration Room Inventory")
-        description_box("Capacity Tracking", "This represents your total unused legal contribution limit. **Note:** RRSP room should be used strategically to offset 'Penthouse' income, while TFSA room is best used for consistent long-term tax-free compounding.")
-        
-        room_cols = st.columns(2)
-        room_cols[0].metric("Unused RRSP Room (Saved Years)", f"${total_rrsp_room_left:,.0f}")
-        room_cols[1].metric("Unused TFSA Room (Saved Years)", f"${total_tfsa_room_left:,.0f}")
-
-        st.divider()
         st.subheader("📈 Strategic Growth Comparison")
         
         description_box("Understanding Your Strategic Growth", """
+        This section provides a visual audit of your wealth-building efficiency over time. It is designed to track two critical pillars of financial health:
+        
         **1. Tax Shielding Efficiency (Bar Chart)**
-        * Comparing Gross vs. Taxable income shows how much of your wealth is being 'protected' from immediate tax.
+        * **Gross Income (Grey):** This represents your total earnings before any intervention.
+        * **Taxable Income (Blue):** This is the outcome of your strategy. By using RRSP contributions, you 'shield' a portion of your income. The gap between Grey and Blue represents income you earned that you do not pay taxes on today.
         
         **2. Capital Accumulation Momentum (Line Chart)**
-        * Tracks the total volume of money moved into tax-sheltered environments (RRSP + TFSA).
+        * This tracks the **Total Annual Savings** (RRSP + TFSA) you have committed to your future. 
+        * A rising line indicates that your capacity to save is increasing, or you are becoming more disciplined in capturing surplus income.
         """)
 
         # Prepare Data
