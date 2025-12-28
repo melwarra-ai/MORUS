@@ -761,3 +761,303 @@ else:
         st.metric(
             "Tax Refund Generated",
             f"${estimated_refund:,.0f}",
+            help="Estimated refund from RRSP tax deductions"
+        )
+    
+    with col_refund2:
+        available_for_tfsa = min(estimated_refund, remaining_tfsa_room)
+        st.metric(
+            "Available for TFSA",
+            f"${available_for_tfsa:,.0f}",
+            help="Refund amount that fits in remaining TFSA room"
+        )
+    
+    with col_refund3:
+        reinvest_pct = (available_for_tfsa / max(1, estimated_refund)) * 100
+        st.metric(
+            "Reinvestment Rate",
+            f"{reinvest_pct:.1f}%",
+            help="Percentage of refund deployable to TFSA"
+        )
+    
+    # Refund deployment calculator
+    with st.expander("🧮 Refund Deployment Calculator", expanded=True):
+        st.markdown("**Strategic Question:** How much of your tax refund will you reinvest into your TFSA?")
+        
+        refund_to_deploy = st.slider(
+            "Amount to reinvest in TFSA",
+            0.0,
+            float(estimated_refund),
+            value=min(float(estimated_refund), float(remaining_tfsa_room)),
+            step=100.0,
+            format="$%.0f"
+        )
+        
+        col_deploy1, col_deploy2 = st.columns(2)
+        
+        with col_deploy1:
+            st.markdown("**Deployment Impact:**")
+            new_tfsa_total = tfsa_lump_sum + refund_to_deploy
+            new_tfsa_room = max(0, tfsa_room - new_tfsa_total)
+            
+            st.write(f"- Total TFSA contribution: ${new_tfsa_total:,.0f}")
+            st.write(f"- Remaining TFSA room: ${new_tfsa_room:,.0f}")
+            st.write(f"- Combined tax-advantaged savings: ${total_rrsp_contributions + new_tfsa_total:,.0f}")
+        
+        with col_deploy2:
+            st.markdown("**20-Year Growth Projection:**")
+            # Assuming 7% annual return
+            growth_rate = 0.07
+            years = 20
+            future_value = refund_to_deploy * ((1 + growth_rate) ** years)
+            tax_saved_at_withdrawal = future_value * marginal_rate
+            
+            st.write(f"- Refund deployed: ${refund_to_deploy:,.0f}")
+            st.write(f"- Future value @ 7%: ${future_value:,.0f}")
+            st.write(f"- Tax saved (vs. taxable): ${tax_saved_at_withdrawal:,.0f}")
+    
+    st.divider()
+    
+    # March 1st Deadline Dashboard
+    st.markdown(f"### 📅 March 1st Deadline Dashboard ({selected_year + 1})")
+    
+    col_deadline = st.columns([3, 1])
+    with col_deadline[1]:
+        components.html('''
+            <button onclick="window.print()" 
+                style="width: 100%; height: 60px; background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%); 
+                color: white; border: none; border-radius: 10px; font-weight: 600; 
+                cursor: pointer; box-shadow: 0 4px 6px rgba(59, 130, 246, 0.4);
+                transition: all 0.3s ease;">
+                📄 Save as PDF
+            </button>
+        ''', height=80)
+    
+    st.markdown(f"""
+        <div class="premium-card">
+            <h4>Critical Action Items Before March 1, {selected_year + 1}</h4>
+            <p style="color: #64748b; margin-bottom: 20px;">
+                These deposits must be completed to claim deductions for tax year {selected_year}
+            </p>
+        </div>
+    """, unsafe_allow_html=True)
+    
+    ac1, ac2, ac3, ac4 = st.columns(4)
+    
+    with ac1:
+        st.metric(
+            "RRSP Lump Sum Due",
+            f"${rrsp_lump_sum:,.0f}",
+            help="One-time deposit needed before deadline"
+        )
+    
+    with ac2:
+        st.metric(
+            "TFSA Deployment",
+            f"${tfsa_lump_sum:,.0f}",
+            help="Planned TFSA contribution"
+        )
+    
+    with ac3:
+        st.metric(
+            "Expected Refund",
+            f"${estimated_refund:,.0f}",
+            delta=f"+{(estimated_refund/max(1,total_rrsp_contributions))*100:.1f}%",
+            help="Tax refund from all RRSP contributions"
+        )
+    
+    with ac4:
+        net_cashflow = estimated_refund - rrsp_lump_sum - tfsa_lump_sum
+        st.metric(
+            "Net Cashflow Impact",
+            f"${net_cashflow:,.0f}",
+            delta="Surplus" if net_cashflow >= 0 else "Investment",
+            delta_color="normal" if net_cashflow >= 0 else "inverse",
+            help="Refund minus deposits"
+        )
+    
+    st.divider()
+    
+    # Carryover Room Projection
+    st.markdown(f"### ⏭️ {selected_year + 1} Carryover Room Projection")
+    
+    description_box(
+        "Forward-Looking Planning",
+        f"Based on CRA's indexed limits and your {selected_year} contributions, "
+        "here's your projected contribution room for next year."
+    )
+    
+    # RRSP new room calculation (18% of income, max $31,560 for 2025)
+    rrsp_earned_room = min(31560, t4_gross_income * 0.18)
+    projected_rrsp_room = remaining_rrsp_room + rrsp_earned_room
+    
+    # TFSA new room (indexed amount, $7,000 for 2025)
+    tfsa_earned_room = 7000
+    projected_tfsa_room = remaining_tfsa_room + tfsa_earned_room
+    
+    col_carry1, col_carry2 = st.columns(2)
+    
+    with col_carry1:
+        st.markdown("**RRSP Room Evolution**")
+        st.metric(
+            f"{selected_year + 1} Projected RRSP Room",
+            f"${projected_rrsp_room:,.0f}",
+            delta=f"+${rrsp_earned_room:,.0f} new",
+            help="Unused room + newly earned contribution room"
+        )
+        
+        st.progress(min(1.0, total_rrsp_contributions / max(1, rrsp_room)))
+        st.caption(f"You used {(total_rrsp_contributions/max(1,rrsp_room))*100:.1f}% of available RRSP room in {selected_year}")
+    
+    with col_carry2:
+        st.markdown("**TFSA Room Evolution**")
+        st.metric(
+            f"{selected_year + 1} Projected TFSA Room",
+            f"${projected_tfsa_room:,.0f}",
+            delta=f"+${tfsa_earned_room:,.0f} new",
+            help="Unused room + annual indexed increase"
+        )
+        
+        st.progress(min(1.0, tfsa_lump_sum / max(1, tfsa_room)))
+        st.caption(f"You used {(tfsa_lump_sum/max(1,tfsa_room))*100:.1f}% of available TFSA room in {selected_year}")
+    
+    st.divider()
+    
+    # Tax Bracket Reference
+    st.markdown("### 📑 Ontario Tax Bracket Reference (Combined Federal + Provincial)")
+    
+    with st.expander("📊 View Detailed Bracket Information", expanded=False):
+        description_box(
+            "2025/2026 Marginal Tax Rates",
+            "These are the combined federal and Ontario provincial marginal tax rates. "
+            "Your marginal rate is the tax you pay on each additional dollar earned."
+        )
+        
+        bracket_df = pd.DataFrame([
+            {
+                "Floor Level": bracket['name'],
+                "Income Range": f"${bracket['low']:,} - ${bracket['high']:,}" if bracket['high'] != float('inf') else f"${bracket['low']:,}+",
+                "Marginal Rate": f"{bracket['rate']*100:.2f}%",
+                "Tax on $1,000": f"${1000 * bracket['rate']:.2f}"
+            }
+            for bracket in TAX_BRACKETS
+        ])
+        
+        st.dataframe(
+            bracket_df,
+            use_container_width=True,
+            hide_index=True
+        )
+        
+        # Highlight current bracket
+        current_bracket = None
+        for bracket in TAX_BRACKETS:
+            if bracket['low'] <= taxable_income < bracket['high']:
+                current_bracket = bracket
+                break
+        
+        if current_bracket and taxable_income > 0:
+            st.info(f"📍 Your current marginal bracket: **{current_bracket['name']}** at **{current_bracket['rate']*100:.2f}%**")
+    
+    # Strategic Insights
+    st.divider()
+    st.markdown("### 💡 Strategic Insights & Recommendations")
+    
+    insights = []
+    
+    # Insight 1: Penthouse exposure
+    if penthouse_income > 0:
+        insights.append({
+            "icon": "⚠️",
+            "title": "High Priority: Penthouse Exposure",
+            "message": f"You have ${penthouse_income:,.0f} exposed to the Penthouse rate (47.97%). "
+                      f"Consider depositing an additional ${penthouse_shield_needed:,.0f} to your RRSP before March 1st "
+                      f"to save ${penthouse_income * 0.4797:,.0f} in taxes.",
+            "priority": "high"
+        })
+    
+    # Insight 2: Unused RRSP room
+    if remaining_rrsp_room > 10000:
+        insights.append({
+            "icon": "💰",
+            "title": "Opportunity: Unused RRSP Room",
+            "message": f"You have ${remaining_rrsp_room:,.0f} of unused RRSP room. "
+                      f"At your marginal rate of {marginal_rate*100:.2f}%, every additional $10,000 contributed "
+                      f"would generate a ${10000 * marginal_rate:,.0f} tax refund.",
+            "priority": "medium"
+        })
+    
+    # Insight 3: TFSA optimization
+    if remaining_tfsa_room > 5000:
+        insights.append({
+            "icon": "🌱",
+            "title": "Growth Opportunity: TFSA Capacity",
+            "message": f"You have ${remaining_tfsa_room:,.0f} of unused TFSA room. "
+                      f"Consider deploying your ${estimated_refund:,.0f} tax refund into this tax-free growth vehicle. "
+                      f"Over 20 years at 7% annual returns, this could grow to ${estimated_refund * (1.07**20):,.0f} tax-free.",
+            "priority": "medium"
+        })
+    
+    # Insight 4: Employer match
+    if employer_match > 0:
+        employer_contribution = base_salary * (employer_match / 100)
+        insights.append({
+            "icon": "🎁",
+            "title": "Free Money: Employer Match",
+            "message": f"Your employer is contributing ${employer_contribution:,.0f} annually ({employer_match}% match). "
+                      f"This is a {employer_match*100:.0f}% instant return on your contributions. "
+                      f"Always maximize employer matching contributions first.",
+            "priority": "high"
+        })
+    
+    # Insight 5: Efficiency score
+    efficiency_score = (total_rrsp_contributions / max(1, rrsp_room)) * 0.5 + \
+                      (tfsa_lump_sum / max(1, tfsa_room)) * 0.5
+    
+    if efficiency_score < 0.5:
+        insights.append({
+            "icon": "📈",
+            "title": "Efficiency Opportunity",
+            "message": f"Your contribution room utilization is {efficiency_score*100:.1f}%. "
+                      f"You're leaving significant tax advantages on the table. "
+                      f"Consider increasing your automatic contributions or making larger lump-sum deposits.",
+            "priority": "medium"
+        })
+    elif efficiency_score > 0.8:
+        insights.append({
+            "icon": "✨",
+            "title": "Excellent Optimization",
+            "message": f"Your contribution room utilization is {efficiency_score*100:.1f}%. "
+                      f"You're making excellent use of your available tax-advantaged space. "
+                      f"Keep up this disciplined approach to wealth building!",
+            "priority": "high"
+        })
+    
+    # Display insights
+    for insight in insights:
+        priority_class = "priority-high" if insight['priority'] == "high" else "priority-medium"
+        st.markdown(f'''
+            <div class="premium-card {priority_class}">
+                <h4>{insight['icon']} {insight['title']}</h4>
+                <p style="line-height: 1.6;">{insight['message']}</p>
+            </div>
+        ''', unsafe_allow_html=True)
+    
+    if not insights:
+        st.success("✅ Your strategy is well-optimized! No critical action items identified.")
+
+# Footer
+st.divider()
+st.markdown("""
+    <div style="text-align: center; color: #64748b; padding: 20px;">
+        <p><strong>Canadian Tax & Wealth Velocity Suite</strong></p>
+        <p style="font-size: 0.9em;">
+            Tax rates are based on 2025/2026 Ontario combined federal + provincial brackets. 
+            Always consult with a qualified tax professional for personalized advice.
+        </p>
+        <p style="font-size: 0.85em; margin-top: 10px;">
+            RRSP contribution limit: 18% of previous year's income (max $31,560) | 
+            TFSA annual limit: $7,000
+        </p>
+    </div>
+""", unsafe_allow_html=True)
