@@ -40,14 +40,23 @@ st.markdown("""
         margin-bottom: 20px;
         color: #1f2937;
     }
+    /* IMPROVED PDF PRINT LOGIC */
     @media print {
-        div[data-testid="stSidebar"], .stButton, button, header, footer, [data-testid="stToolbar"] {
+        /* Hide UI elements */
+        div[data-testid="stSidebar"], .stButton, button, header, footer, [data-testid="stToolbar"], .pinned {
             display: none !important;
         }
+        /* Ensure all content is visible and takes full width */
         .main .block-container {
             max-width: 100% !important;
             padding: 0 !important;
             margin: 0 !important;
+        }
+        /* Fix for charts and tables disappearing */
+        div, table, tr, td, th {
+            page-break-inside: avoid !important;
+            opacity: 1 !important;
+            visibility: visible !important;
         }
     }
     </style>
@@ -127,10 +136,10 @@ est_refund = total_rrsp_contributions * 0.46
 
 st.title("🏛️ TAX RRSP/TFSA Planner")
 
-# A. QUICK START GUIDE
+# A. QUICK START GUIDE (UPDATED TEXT)
 st.header("🚀 Quick Start Guide")
 description_box("""
-1. **Input Data:** Use the sidebar to enter your Income, Room Limits, and Planned Savings.
+1. **Input Data:** Use the sidebar to enter your Income, Room Limits,.
 2. **Review Deadlines:** Check the 'March 1st Deadlines' section for immediate actions.
 3. **Visualize Savings:** Look at the 'Tax Building' to see how your RRSP 'shields' your income from high tax brackets.
 4. **Optimize:** Adjust your Lump Sums to eliminate income in the orange 'Taxed' zones of the Penthouse floor.
@@ -141,8 +150,9 @@ description_box("""
 col_h1, col_h2 = st.columns([3, 1])
 with col_h1:
     st.subheader("📅 March 1st Deadlines")
-    description_box("Priority actions to execute before the tax deadline to maximize your 2025 return.")
+    description_box("Priority actions to execute before the tax deadline to maximize your return.")
 with col_h2:
+    # Button triggers full window print which is captured by the PDF stylesheet
     components.html("""
         <button onclick="window.print()" style="
             width: 100%; height: 50px; background-color: #3b82f6; color: white; 
@@ -177,7 +187,9 @@ st.table(room_df)
 # D. THE TAX BUILDING
 st.divider()
 st.subheader("🏢 The Tax Building Visualizer")
-description_box("This chart shows your income progression. **Shielded (Blue)** segments represent income removed from taxation, potentially saving you up to 48% in tax per dollar.")
+description_box("This chart shows your income progression. Shielded (Blue) segments represent income removed from taxation.")
+
+
 
 BRACKETS = [
     {"Floor": "Floor 1", "low": 0, "top": 53891, "rate": 0.1905},
@@ -213,7 +225,7 @@ else:
 # E. STRATEGY SUMMARY TABLE
 st.divider()
 st.subheader("📊 Strategic Prioritization")
-description_box("An efficiency ranking of your accounts. Generally, you should focus on the highest tax ROI first.")
+description_box("An efficiency ranking of your accounts based on marginal ROI.")
 
 summary_df = pd.DataFrame({
     "Action": ["RRSP (High Value)", "RRSP (Low Value)", "TFSA"],
@@ -226,4 +238,4 @@ summary_df = pd.DataFrame({
 })
 st.table(summary_df)
 
-description_box("**Executive Summary:** Your current setup effectively utilizes your marginal tax rate. Ensure the bulk deposits are cleared before March 1st to achieve the calculated tax shielding.")
+description_box("**Executive Summary:** Your current setup effectively utilizes your marginal tax rate. Ensure the bulk deposits are cleared before March 1st.")
