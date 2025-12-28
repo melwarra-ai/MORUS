@@ -25,12 +25,12 @@ def load_from_file():
             return {}
     return {}
 
+# Load data into a local variable, NOT session_state directly to avoid the crash
 saved_data = load_from_file()
 
 # --- 2. CONFIGURATION & PDF PRINT STYLING ---
 st.set_page_config(page_title="Retirement Architect Pro", layout="wide")
 
-# CSS to ensure the PDF report shows everything but hides the interactive UI
 st.markdown("""
     <style>
     @media print {
@@ -41,9 +41,6 @@ st.markdown("""
             max-width: 100% !important;
             padding: 0 !important;
             margin: 0 !important;
-        }
-        h1, h2, h3, p, span, div {
-            color: black !important;
         }
     }
     </style>
@@ -57,35 +54,32 @@ with st.sidebar:
     st.header("👤 Income Inputs")
     st.info("Input your T4 details. These numbers are used to calculate your 'Tax Building' height.")
     
+    # We use saved_data.get(key, 0) so it defaults to 0 if reset or empty
     t4_gross_income = st.number_input(
         "T4 Gross Income (Total)", 
-        value=saved_data.get("t4_gross_income", 235000), 
-        step=5000,
+        value=float(saved_data.get("t4_gross_income", 0)), 
+        step=5000.0,
         key="t4_gross_income"
     )
     
     base_salary = st.number_input(
         "Annual Base Salary ($)", 
-        value=saved_data.get("base_salary", 180000), 
-        step=5000, 
+        value=float(saved_data.get("base_salary", 0)), 
+        step=5000.0, 
         key="base_salary"
     )
     
     st.header("💰 RRSP Payroll Setup")
-    st.info("Configure your biweekly employer-matched contributions.")
-    
-    biweekly_pct = st.slider("Biweekly RRSP (%)", 0.0, 18.0, value=saved_data.get("biweekly_pct", 6.0), key="biweekly_pct")
-    employer_match = st.slider("Employer Match (%)", 0.0, 10.0, value=saved_data.get("employer_match", 4.0), key="employer_match")
+    biweekly_pct = st.slider("Biweekly RRSP (%)", 0.0, 18.0, value=float(saved_data.get("biweekly_pct", 0.0)), key="biweekly_pct")
+    employer_match = st.slider("Employer Match (%)", 0.0, 10.0, value=float(saved_data.get("employer_match", 0.0)), key="employer_match")
     
     st.header("📅 Bulk Contributions")
-    st.info("Lump sums to be deposited manually before the March deadline.")
-    
-    rrsp_lump_sum = st.number_input("RRSP Lump Sum ($)", value=saved_data.get("rrsp_lump_sum", 10000), key="rrsp_lump_sum")
-    tfsa_lump_sum = st.number_input("TFSA Lump Sum ($)", value=saved_data.get("tfsa_lump_sum", 7000), key="tfsa_lump_sum")
+    rrsp_lump_sum = st.number_input("RRSP Lump Sum ($)", value=float(saved_data.get("rrsp_lump_sum", 0)), key="rrsp_lump_sum")
+    tfsa_lump_sum = st.number_input("TFSA Lump Sum ($)", value=float(saved_data.get("tfsa_lump_sum", 0)), key="tfsa_lump_sum")
     
     st.header("📁 Room Registry")
-    rrsp_room = st.number_input("Unused RRSP Room", value=saved_data.get("rrsp_room", 146000), key="rrsp_room")
-    tfsa_room = st.number_input("Unused TFSA Room", value=saved_data.get("tfsa_room", 102000), key="tfsa_room")
+    rrsp_room = st.number_input("Unused RRSP Room", value=float(saved_data.get("rrsp_room", 0)), key="rrsp_room")
+    tfsa_room = st.number_input("Unused TFSA Room", value=float(saved_data.get("tfsa_room", 0)), key="tfsa_room")
 
     st.divider()
     
@@ -102,11 +96,11 @@ with st.sidebar:
             st.success("Saved!")
     
     with c_reset:
-        # CHANGE 1: Reset to Zero and Delete Save
+        # FIXED RESET: Deletes file and clears state without direct assignment
         if st.button("🔄 Reset to 0"):
-            if os.path.exists(SAVE_FILE): os.remove(SAVE_FILE)
-            for key in st.session_state.keys():
-                st.session_state[key] = 0
+            if os.path.exists(SAVE_FILE): 
+                os.remove(SAVE_FILE)
+            st.session_state.clear()
             st.rerun()
 
 # --- 4. CALCULATIONS ---
@@ -115,31 +109,26 @@ total_rrsp_contributions = annual_rrsp_periodic + rrsp_lump_sum
 taxable_income_for_chart = t4_gross_income - total_rrsp_contributions
 tax_cliff = 181440 
 
-final_rrsp_room = max(0, rrsp_room - total_rrsp_contributions)
-final_tfsa_room = max(0, tfsa_room - tfsa_lump_sum)
+final_rrsp_room = max(0.0, rrsp_room - total_rrsp_contributions)
+final_tfsa_room = max(0.0, tfsa_room - tfsa_lump_sum)
 est_refund = total_rrsp_contributions * 0.46
 
 # --- 5. REPORT HEADER & PDF BUTTON ---
 col_h1, col_h2 = st.columns([3, 1])
 with col_h1:
     st.header("📋 Retirement Strategy Report")
-    st.write("This report summarizes your contribution plan and the resulting tax savings.")
 with col_h2:
-    # CHANGE 2: Improved PDF button using standard HTML/JS
-    st.write("")
     components.html("""
         <button onclick="window.print()" style="
             width: 100%; height: 50px; background-color: #3b82f6; color: white; 
-            border: none; border-radius: 8px; font-weight: bold; cursor: pointer;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
-            📄 Generate PDF / Print
+            border: none; border-radius: 8px; font-weight: bold; cursor: pointer;">
+            📄 Save as PDF
         </button>
     """, height=70)
 
 # --- 6. ROOM TRACKER ---
 st.divider()
 st.subheader("🏦 Registration Room Status")
-st.write("Current status of your RRSP and TFSA limits after executing this strategy.")
 room_df = pd.DataFrame({
     "Account": ["RRSP Room", "TFSA Room"],
     "Starting": [f"${rrsp_room:,.0f}", f"${tfsa_room:,.0f}"],
@@ -151,7 +140,6 @@ st.table(room_df)
 # --- 7. ACTION PLAN ---
 st.divider()
 st.subheader("📅 March 1st Deadlines")
-st.write("Specific financial actions required before the tax deadline.")
 ac1, ac2, ac3 = st.columns(3)
 with ac1:
     st.metric("RRSP Bulk Deposit", f"${rrsp_lump_sum:,.0f}")
@@ -163,7 +151,7 @@ with ac3:
 # --- 8. THE TAX BUILDING ---
 st.divider()
 st.subheader("🏢 The Tax Building Visualizer")
-st.write("Visual representation of your income floors. Blue sections represent income shielded by your RRSP contributions.")
+
 
 BRACKETS = [
     {"Floor": "Floor 1", "low": 0, "top": 53891, "rate": 0.1905},
