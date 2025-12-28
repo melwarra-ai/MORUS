@@ -23,6 +23,13 @@ def save_year_data(year, data):
     with open(SAVE_FILE, "w") as f:
         json.dump(all_data, f)
 
+def delete_year_data(year):
+    all_data = load_all_data()
+    if str(year) in all_data:
+        del all_data[str(year)]
+        with open(SAVE_FILE, "w") as f:
+            json.dump(all_data, f)
+
 all_history = load_all_data()
 
 # --- 2. NAVIGATION STATE ---
@@ -43,19 +50,6 @@ st.markdown("""
         border-left: 5px solid #3b82f6;
         margin-bottom: 20px;
         color: #1f2937;
-    }
-    .year-tile {
-        background-color: #ffffff;
-        border: 2px solid #3b82f6;
-        padding: 20px;
-        border-radius: 15px;
-        text-align: center;
-        transition: 0.3s;
-        cursor: pointer;
-    }
-    .year-tile:hover {
-        background-color: #3b82f6;
-        color: white;
     }
     @media print {
         div[data-testid="stSidebar"], .stButton, button, header, footer, [data-testid="stToolbar"] {
@@ -78,7 +72,6 @@ if st.session_state.current_page == "Home":
     st.title("🏠 Strategy Dashboard")
     description_box("Select a year to view your planned strategy or create a new execution record.")
     
-    # Year Tiles Layout
     st.subheader("📅 Planning Years")
     cols = st.columns(4)
     years_to_show = list(range(2024, 2030))
@@ -90,6 +83,48 @@ if st.session_state.current_page == "Home":
                 st.session_state.selected_year = yr
                 st.session_state.current_page = "Year View"
                 st.rerun()
+
+    # --- YEAR OVER YEAR COMPARISON ---
+    if all_history:
+        st.divider()
+        st.subheader("📈 Strategic Growth Comparison")
+        
+        # Prepare data for charts
+        chart_data = []
+        for yr, data in all_history.items():
+            annual_rrsp = (data.get('base_salary', 0) * (data.get('biweekly_pct', 0) + data.get('employer_match', 0)) / 100) + data.get('rrsp_lump_sum', 0)
+            chart_data.append({
+                "Year": yr,
+                "Gross Income": data.get('t4_gross_income', 0),
+                "Taxable Income": data.get('t4_gross_income', 0) - annual_rrsp,
+                "Total Savings": annual_rrsp + data.get('tfsa_lump_sum', 0)
+            })
+        df_chart = pd.DataFrame(chart_data).sort_values("Year")
+
+        c1, c2 = st.columns(2)
+        
+        with c1:
+            st.write("**Income vs. Taxable Income**")
+            # Melt for side-by-side comparison
+            melted_income = df_chart.melt('Year', value_vars=['Gross Income', 'Taxable Income'])
+            income_chart = alt.Chart(melted_income).mark_bar(opacity=0.7).encode(
+                x='Year:N',
+                y=alt.Y('value:Q', title="Amount ($)", stack=None),
+                color=alt.Color('variable:N', scale=alt.Scale(range=['#94a3b8', '#3b82f6'])),
+                tooltip=['Year', 'variable', 'value']
+            ).properties(height=300)
+            st.altair_chart(income_chart, use_container_width=True)
+            st.caption("Lower Blue bar shows how much income is actually being taxed after RRSP shields.")
+
+        with c2:
+            st.write("**Annual Savings Volume (RRSP + TFSA)**")
+            savings_chart = alt.Chart(df_chart).mark_line(point=True, color='#10b981').encode(
+                x='Year:N',
+                y=alt.Y('Total Savings:Q', title="Total Saved ($)"),
+                tooltip=['Year', 'Total Savings']
+            ).properties(height=300)
+            st.altair_chart(savings_chart, use_container_width=True)
+            st.caption("Total annual contribution volume across all accounts.")
 
     # Execution History Log
     st.divider()
@@ -134,21 +169,45 @@ else:
         rrsp_room = st.number_input("Unused RRSP Room", value=float(year_data.get("rrsp_room", 0)))
         tfsa_room = st.number_input("Unused TFSA Room", value=float(year_data.get("tfsa_room", 0)))
 
-        if st.button(f"💾 Save {selected_year} Strategy", use_container_width=True):
-            current_state = {
-                "t4_gross_income": t4_gross_income, "base_salary": base_salary,
-                "biweekly_pct": biweekly_pct, "employer_match": employer_match,
-                "rrsp_lump_sum": rrsp_lump_sum, "tfsa_lump_sum": tfsa_lump_sum,
-                "rrsp_room": rrsp_room, "tfsa_room": tfsa_room
-            }
-            save_year_data(selected_year, current_state)
-            st.success("Strategy Saved!")
-            st.rerun()
+        st.divider()
+        
+        c_save, c_reset = st.columns(2)
+        with c_save:
+            if st.button("💾 Save", use_container_width=True):
+                current_state = {
+                    "t4_gross_income": t4_gross_income, "base_salary": base_salary,
+                    "biweekly_pct": biweekly_pct, "employer_match": employer_match,
+                    "rrsp_lump_sum": rrsp_lump_sum, "tfsa_lump_sum": tfsa_lump_sum,
+                    "rrsp_room": rrsp_room, "tfsa_room": tfsa_room
+                }
+                save_year_data(selected_year, current_state)
+                st.success("Saved!")
+                st.rerun()
+        
+        with c_reset:
+            if "confirm_reset" not in st.session_state:
+                st.session_state.confirm_reset = False
+            
+            if not st.session_state.confirm_reset:
+                if st.button("🔄 Reset", use_container_width=True):
+                    st.session_state.confirm_reset = True
+                    st.rerun()
+            else:
+                st.warning("Confirm Reset?")
+                col_y, col_n = st.columns(2)
+                with col_y:
+                    if st.button("✅ Yes", use_container_width=True):
+                        delete_year_data(selected_year)
+                        st.session_state.confirm_reset = False
+                        st.rerun()
+                with col_n:
+                    if st.button("❌ No", use_container_width=True):
+                        st.session_state.confirm_reset = False
+                        st.rerun()
 
-    # Main Planner Content for the Selected Year
+    # Main Planner Content
     st.title(f"🏛️ Strategy: {selected_year}")
     
-    # Calculations
     annual_rrsp_periodic = base_salary * ((biweekly_pct + employer_match) / 100)
     total_rrsp_contributions = annual_rrsp_periodic + rrsp_lump_sum
     taxable_income_for_chart = t4_gross_income - total_rrsp_contributions
@@ -157,16 +216,14 @@ else:
     final_tfsa_room = max(0.0, tfsa_room - tfsa_lump_sum)
     est_refund = total_rrsp_contributions * 0.46
 
-    # A. QUICK START GUIDE
     st.header("🚀 Quick Start Guide")
     description_box(f"""
-    1. **Input Data:** Use the sidebar to enter your Income and Room Limits for **{selected_year}**.
+    1. **Input Data:** Use the sidebar to enter your Income, Room Limits for **{selected_year}**.
     2. **Review Deadlines:** Check the 'March 1st Deadlines' section for immediate actions.
     3. **Visualize Savings:** Look at the 'Tax Building' to see how your RRSP 'shields' your income.
     4. **Finalize:** Hit 'Save' to record your {selected_year} execution strategy.
     """)
 
-    # B. ACTION PLAN
     col_h1, col_h2 = st.columns([3, 1])
     with col_h1:
         st.subheader(f"📅 March 1st Deadlines ({selected_year})")
@@ -179,7 +236,6 @@ else:
     with ac2: st.metric("TFSA Bulk Deposit", f"${tfsa_lump_sum:,.0f}")
     with ac3: st.metric("Expected Tax Refund", f"${est_refund:,.0f}")
 
-    # C. ROOM TRACKER
     st.divider()
     st.subheader("🏦 Registration Room Status")
     room_df = pd.DataFrame({
@@ -190,9 +246,9 @@ else:
     })
     st.table(room_df)
 
-    # D. THE TAX BUILDING
     st.divider()
     st.subheader("🏢 The Tax Building Visualizer")
+    
     
     BRACKETS = [
         {"Floor": "Floor 1", "low": 0, "top": 53891, "rate": 0.1905},
@@ -223,7 +279,6 @@ else:
         ).properties(height=400)
         st.altair_chart(chart, use_container_width=True)
 
-    # E. STRATEGY SUMMARY TABLE
     st.divider()
     st.subheader("📊 Strategic Prioritization")
     summary_df = pd.DataFrame({
