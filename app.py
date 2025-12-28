@@ -1,35 +1,91 @@
 import streamlit as st
 import pandas as pd
 import altair as alt
-import json
+import streamlit.components.v1 as components
 
 # --- CONFIGURATION ---
 st.set_page_config(page_title="Retirement Architect Pro", layout="wide")
-st.title("🏛️ Retirement Architect: Ultimate Strategy Pro")
-st.markdown("### Strategy: High-Income Shielding & Early Retirement (2026)")
 
-# --- SIDEBAR: PROFILE & INPUTS ---
+# --- CUSTOM CSS FOR CLEAN PRINTING ---
+# This ensures that when you hit 'Save', the sidebar and buttons are hidden.
+st.markdown("""
+    <style>
+    @media print {
+        div[data-testid="stSidebar"], 
+        div.stButton, 
+        button,
+        header,
+        footer {
+            display: none !important;
+        }
+        .main .block-container {
+            padding-top: 2rem !important;
+            max-width: 100% !important;
+        }
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+st.title("🏛️ Retirement Architect: Strategy Report")
+
+# --- SIDEBAR: MANUAL INPUTS ---
 with st.sidebar:
     st.header("👤 Income Profile")
-    base_salary = st.number_input("Annual Base Salary ($)", value=180000, step=5000)
-    bonus_pct = st.slider("Bonus Target (%)", 0, 50, 15)
-    
-    # Calculate Bonus and Gross
-    bonus_amt = base_salary * (bonus_pct / 100)
-    gross_income = base_salary + bonus_amt
-    st.write(f"**Calculated Bonus:** ${bonus_amt:,.0f}")
-    st.write(f"**Total Gross Income:** ${gross_income:,.0f}")
+    # Manual Gross Entry: Enter the sum of base, bonus, and other income
+    gross_income = st.number_input("Total Annual Gross Income ($)", value=235000, step=5000)
+    bonus_amt = st.number_input("Portion of Gross that is Bonus ($)", value=55000, step=1000)
     
     st.header("💰 RRSP Contributions")
+    base_salary_calc = st.number_input("Base Salary for Biweekly Calc ($)", value=180000)
     biweekly_pct = st.slider("Biweekly Contribution (% of Base)", 0.0, 18.0, 6.0)
-    employer_match = st.slider("Employer Match (% of Base)", 0.0, 10.0, 4.0)
+    employer_match = st.slider("Employer Match (%)", 0.0, 10.0, 4.0)
     lump_sum = st.number_input("March 2nd Lump Sum ($)", value=10000, step=1000)
     
-    st.header("📁 Initial Room (Before Strategy)")
-    initial_rrsp_room = st.number_input("Current Unused RRSP Room ($)", value=146000)
-    initial_tfsa_room = st.number_input("Current Unused TFSA Room ($)", value=102000)
+    st.header("📁 Initial Room")
+    initial_rrsp_room = st.number_input("Initial Unused RRSP Room ($)", value=146000)
+    initial_tfsa_room = st.number_input("Initial Unused TFSA Room ($)", value=102000)
 
-# --- 2026 ONTARIO/FEDERAL TAX DATA ---
+# --- CALCULATIONS ---
+annual_rrsp_periodic = base_salary_calc * ((biweekly_pct + employer_match) / 100)
+total_rrsp_contributions = annual_rrsp_periodic + lump_sum
+taxable_income = gross_income - total_rrsp_contributions
+
+# Room Impact
+final_rrsp_room = max(0, initial_rrsp_room - total_rrsp_contributions)
+est_refund = total_rrsp_contributions * 0.46 
+final_tfsa_room = max(0, initial_tfsa_room - est_refund)
+
+# --- UI HEADER & SAVE BUTTON ---
+col_h1, col_h2 = st.columns([3, 1])
+with col_h1:
+    st.header("📊 Strategy Execution & Room Status")
+with col_h2:
+    # This triggers the browser's native print-to-PDF function
+    print_btn = """
+    <script>
+    function save_ui() {
+        window.print();
+    }
+    </script>
+    <button onclick="save_ui()" style="padding: 12px 24px; background-color: #3b82f6; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: bold; width: 100%;">
+        💾 Save Strategy (Print to PDF)
+    </button>
+    """
+    components.html(print_btn, height=70)
+
+# --- DATA TABLES ---
+room_df = pd.DataFrame({
+    "Account": ["RRSP Room", "TFSA Room"],
+    "Starting Room": [f"${initial_rrsp_room:,.0f}", f"${initial_tfsa_room:,.0f}"],
+    "Strategy Usage": [f"-${total_rrsp_contributions:,.0f}", f"-${est_refund:,.0f}"],
+    "Post-Strategy Room": [f"${final_rrsp_room:,.0f}", f"${final_tfsa_room:,.0f}"]
+})
+st.table(room_df)
+st.metric("Total RRSP Contribution Plan", f"${total_rrsp_contributions:,.0f}")
+
+# --- TAX VISUALIZER ---
+st.divider()
+st.subheader("🏢 The Tax Building (Progress Visualizer)")
 BRACKETS = [
     {"Floor": "Floor 1", "low": 0, "top": 53891, "rate": 0.1905},
     {"Floor": "Floor 2", "low": 53891, "top": 58523, "rate": 0.2315},
@@ -39,65 +95,18 @@ BRACKETS = [
     {"Floor": "Penthouse", "low": 181440, "top": 258482, "rate": 0.4829}
 ]
 
-# --- CALCULATIONS ---
-# 1. Total RRSP Contributions
-annual_rrsp_periodic = base_salary * ((biweekly_pct + employer_match) / 100)
-total_rrsp_contributions = annual_rrsp_periodic + lump_sum
-taxable_income = gross_income - total_rrsp_contributions
-tax_cliff = 181440 
-
-# 2. Room Impact
-final_rrsp_room = max(0, initial_rrsp_room - total_rrsp_contributions)
-est_refund = total_rrsp_contributions * 0.46 
-final_tfsa_room = max(0, initial_tfsa_room - est_refund)
-
-# --- SAVE STRATEGY FUNCTION ---
-strategy_export = {
-    "Base Salary": base_salary,
-    "Bonus %": bonus_pct,
-    "Bonus Dollars": bonus_amt,
-    "Total RRSP Contributions": total_rrsp_contributions,
-    "Est Refund": est_refund,
-    "Remaining RRSP Room": final_rrsp_room
-}
-
-# --- HEADER: ROOM TRACKER & SAVE ---
-col_h1, col_h2 = st.columns([3, 1])
-with col_h1:
-    st.header("📊 Room & Strategy Execution")
-with col_h2:
-    st.download_button(
-        label="💾 Save Strategy (JSON)",
-        data=json.dumps(strategy_export, indent=4),
-        file_name="retirement_strategy.json",
-        mime="application/json"
-    )
-
-room_df = pd.DataFrame({
-    "Account": ["RRSP Room", "TFSA Room"],
-    "Starting Room": [f"${initial_rrsp_room:,.0f}", f"${initial_tfsa_room:,.0f}"],
-    "Strategy Usage": [f"-${total_rrsp_contributions:,.0f}", f"-${est_refund:,.0f}"],
-    "Post-Strategy Room": [f"${final_rrsp_room:,.0f}", f"${final_tfsa_room:,.0f}"]
-})
-st.table(room_df)
-
-st.metric("Total RRSP Contributions", f"${total_rrsp_contributions:,.0f}")
-
-# --- VISUALIZER: SPLIT-BAR TAX BUILDING ---
-st.divider()
-st.subheader("🏢 The Tax Building (Visual Impact)")
-building_data = []
+chart_data = []
 for b in BRACKETS:
     total_in_bracket = min(gross_income, b['top']) - b['low']
     if total_in_bracket <= 0: continue
     taxed_amt = max(0, min(b['top'], taxable_income) - b['low'])
     shielded_amt = total_in_bracket - taxed_amt
     if shielded_amt > 0:
-        building_data.append({"Floor": b['Floor'], "Amount": shielded_amt, "Status": "Shielded", "Rate": f"{b['rate']*100:.1f}%"})
+        chart_data.append({"Floor": b['Floor'], "Amount": shielded_amt, "Status": "Shielded", "Rate": f"{b['rate']*100:.1f}%"})
     if taxed_amt > 0:
-        building_data.append({"Floor": b['Floor'], "Amount": taxed_amt, "Status": "Taxed", "Rate": f"{b['rate']*100:.1f}%"})
+        chart_data.append({"Floor": b['Floor'], "Amount": taxed_amt, "Status": "Taxed", "Rate": f"{b['rate']*100:.1f}%"})
 
-chart = alt.Chart(pd.DataFrame(building_data)).mark_bar().encode(
+chart = alt.Chart(pd.DataFrame(chart_data)).mark_bar().encode(
     x=alt.X('Floor:N', sort=None),
     y=alt.Y('Amount:Q', title="Income ($)"),
     color=alt.Color('Status:N', scale=alt.Scale(domain=['Shielded', 'Taxed'], range=['#3b82f6', '#f59e0b'])),
@@ -114,19 +123,17 @@ st.warning(f"**Bonus Shield:** If you receive your **${bonus_amt:,.0f}** bonus a
 
 c1, c2 = st.columns(2)
 with c1:
-    with st.expander("📝 March 2nd Checklist"):
-        st.write(f"1. **Confirm Room:** Ensure your ${total_rrsp_contributions:,.0f} total is within limits.")
-        st.write(f"2. **Lump Sum:** Submit ${lump_sum:,.0f} before March 2, 2026.")
-        st.write(f"3. **T1213 Form:** Use total RRSP ${total_rrsp_contributions:,.0f} to reduce source tax.")
+    with st.expander("📝 Strategy Checklist", expanded=True):
+        st.write(f"- **March 2 Deadline:** Ensure your **${lump_sum:,.0f}** lump sum is deposited.")
+        st.write(f"- **T1213 Form:** Use **${total_rrsp_contributions:,.0f}** as your deduction target.")
 with c2:
-    st.success(f"**TFSA Pivot:** Your refund of **${est_refund:,.0f}** should fill your TFSA to provide the tax-free 'bridge' needed for retirement at age 55.")
+    st.success(f"**TFSA Pivot:** Direct your estimated refund of **${est_refund:,.0f}** into the TFSA to build the Age 55 'Tax-Free Bridge'.")
 
 # --- RETIREMENT BRIDGE ---
 st.divider()
 st.subheader("🌉 The Age 55 Retirement Bridge")
-bridge_df = pd.DataFrame({
+st.table(pd.DataFrame({
     "Asset": ["TFSA (The Bridge)", "RRSP (The Foundation)", "CPP/OAS (Gov)"],
-    "Role": ["Live on this Age 55-65", "Primary Income Age 65+", "Supporting Income Age 65+"],
+    "Withdrawal Strategy": ["Bridge the gap from Age 55-65", "Primary income source after Age 65", "Supplemental income after Age 65"],
     "Tax Status": ["Tax-Free", "Taxable", "Taxable"]
-})
-st.table(bridge_df)
+}))
