@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-import alt as alt
+import altair as alt  # <--- Corrected this line
 import json
 import os
 import streamlit.components.v1 as components
