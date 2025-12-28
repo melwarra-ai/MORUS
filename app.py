@@ -1,44 +1,106 @@
 import streamlit as st
 import pandas as pd
 import altair as alt
+import json
+import os
 
-# --- CONFIGURATION & PERSISTENCE ---
+# --- PERSISTENCE ENGINE (JSON) ---
+SAVE_FILE = "retirement_data.json"
+
+def save_data(data):
+    with open(SAVE_FILE, "w") as f:
+        json.dump(data, f)
+
+def load_data():
+    if os.path.exists(SAVE_FILE):
+        with open(SAVE_FILE, "r") as f:
+            return json.load(f)
+    return {}
+
+# Load existing data at startup
+saved_state = load_data()
+
+# --- CONFIGURATION ---
 st.set_page_config(page_title="Retirement Architect Pro", layout="wide")
-
-# Persistent state check
-if 'init' not in st.session_state:
-    st.session_state.init = True
-
 st.title("🏛️ Retirement Architect: Master Strategy Pro")
 
 # --- SIDEBAR: ALL INPUTS ---
 with st.sidebar:
     st.header("👤 Income Profile")
     
-    # UPDATED: T4 Gross Income field and help text
+    # 1. T4 Gross Income (Requirement: No extra text)
     t4_gross_other = st.number_input(
         "T4 Gross Income", 
-        value=0, 
-        help="This is the T4 gross reported in T4 document (Box 14). Enter any taxable income here NOT already covered by base or bonus.",
+        value=saved_state.get("t4_gross_other", 0), 
+        help="This is the T4 gross reported in T4 document",
         key="t4_gross_other"
     )
     
-    base_salary = st.number_input("Annual Base Salary ($)", value=180000, step=5000, key="base_salary")
-    bonus_pct = st.slider("Target Bonus (%)", 0, 50, 15, key="bonus_pct")
+    base_salary = st.number_input(
+        "Annual Base Salary ($)", 
+        value=saved_state.get("base_salary", 180000), 
+        step=5000, 
+        key="base_salary"
+    )
     
-    # Calculations: Base and Bonus are distinct from the T4 Gross "Other" entry
-    bonus_amt = base_salary * (bonus_pct / 100)
-    total_gross_income = base_salary + bonus_amt + t4_gross_other
-    
-    st.info(f"**Total Combined Gross:** ${total_gross_income:,.0f}")
+    bonus_pct = st.slider(
+        "Target Bonus (%)", 
+        0, 50, 
+        value=saved_state.get("bonus_pct", 15), 
+        key="bonus_pct"
+    )
     
     st.header("💰 RRSP & TFSA")
-    biweekly_pct = st.slider("Biweekly Contribution (%)", 0.0, 18.0, 6.0, key="biweekly_pct")
-    employer_match = st.slider("Employer Match (%)", 0.0, 10.0, 4.0, key="employer_match")
-    rrsp_room = st.number_input("Unused RRSP Room ($)", value=146000, key="rrsp_room")
-    tfsa_room = st.number_input("Unused TFSA Room ($)", value=102000, key="tfsa_room")
+    biweekly_pct = st.slider(
+        "Biweekly Contribution (%)", 
+        0.0, 18.0, 
+        value=saved_state.get("biweekly_pct", 6.0), 
+        key="biweekly_pct"
+    )
+    
+    employer_match = st.slider(
+        "Employer Match (%)", 
+        0.0, 10.0, 
+        value=saved_state.get("employer_match", 4.0), 
+        key="employer_match"
+    )
+    
+    rrsp_room = st.number_input(
+        "Unused RRSP Room ($)", 
+        value=saved_state.get("rrsp_room", 146000), 
+        key="rrsp_room"
+    )
+    
+    tfsa_room = st.number_input(
+        "Unused TFSA Room ($)", 
+        value=saved_state.get("tfsa_room", 102000), 
+        key="tfsa_room"
+    )
 
-# --- 2026 TAX BRACKETS ---
+    # Save logic triggered by button or change
+    current_inputs = {
+        "t4_gross_other": t4_gross_other,
+        "base_salary": base_salary,
+        "bonus_pct": bonus_pct,
+        "biweekly_pct": biweekly_pct,
+        "employer_match": employer_match,
+        "rrsp_room": rrsp_room,
+        "tfsa_room": tfsa_room
+    }
+    if st.button("💾 Save My Data Permanently"):
+        save_data(current_inputs)
+        st.success("Data saved to local storage!")
+
+# --- CALCULATIONS ---
+bonus_amt = base_salary * (bonus_pct / 100)
+# Note: Total Gross calc still runs for the chart, but title is removed per request
+gross_income = base_salary + bonus_amt + t4_gross_other
+
+annual_rrsp_periodic = base_salary * ((biweekly_pct + employer_match) / 100)
+taxable_income = gross_income - annual_rrsp_periodic
+tax_cliff = 181440 
+
+# --- TAX BRACKETS ---
 BRACKETS = [
     {"Floor": "Floor 1", "low": 0, "top": 53891, "rate": 0.1905},
     {"Floor": "Floor 2", "low": 53891, "top": 58523, "rate": 0.2315},
@@ -48,20 +110,12 @@ BRACKETS = [
     {"Floor": "Penthouse", "low": 181440, "top": 258482, "rate": 0.4829}
 ]
 
-# --- STRATEGY CALCULATIONS ---
-annual_rrsp_periodic = base_salary * ((biweekly_pct + employer_match) / 100)
-taxable_income = total_gross_income - annual_rrsp_periodic
-tax_cliff = 181440 
-
-# --- VISUALIZER: TAX BUILDING ---
+# --- VISUALIZER ---
 st.header("🏢 The Tax Building Visualizer")
-st.write("Visualizing how your RRSP contributions shield your highest-taxed dollars.")
-
 building_data = []
 for b in BRACKETS:
-    total_in_bracket = min(total_gross_income, b['top']) - b['low']
+    total_in_bracket = min(gross_income, b['top']) - b['low']
     if total_in_bracket <= 0: continue
-    
     taxed_amt = max(0, min(b['top'], taxable_income) - b['low'])
     shielded_amt = total_in_bracket - taxed_amt
     
@@ -78,7 +132,7 @@ chart = alt.Chart(pd.DataFrame(building_data)).mark_bar().encode(
 ).properties(height=400)
 st.altair_chart(chart, use_container_width=True)
 
-# --- FEATURE: MARCH 2nd DEADLINE TOOLKIT ---
+# --- ACTION ITEMS ---
 st.divider()
 st.header("📅 Tax Season Action: March 2nd")
 premium_lump_sum = max(0, taxable_income - tax_cliff)
@@ -93,14 +147,6 @@ with c2:
 with c3:
     st.success(f"Est. Strategy Refund: ${tax_refund:,.0f}")
 
-# --- BONUS SHIELD & T1213 ---
 st.divider()
 tax_on_bonus = bonus_amt * 0.4829
-col_a, col_b = st.columns(2)
-with col_a:
-    st.info(f"**Bonus Shield:** Your ${bonus_amt:,.0f} bonus loses **${tax_on_bonus:,.0f}** to tax if not transferred directly to an RRSP.")
-with col_b:
-    with st.expander("📝 Data for T1213 (Tax Waiver)"):
-        total_deduction = annual_rrsp_periodic + actual_lump
-        st.write(f"- Total Planned RRSP: **${total_deduction:,.0f}**")
-        st.write(f"- Monthly Cashflow Boost: ~**${(total_deduction * 0.45)/12:,.0f}/mo**")
+st.info(f"**Bonus Shield:** Your ${bonus_amt:,.0f} bonus will lose **${tax_on_bonus:,.0f}** to tax if taken as cash.")
