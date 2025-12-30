@@ -305,12 +305,694 @@ if st.session_state.current_page == "Home":
         
         # Get projected balances from latest year
         if latest_data:
-            target_cagr = latest_data.get("target_cagr", 7.0) / 100
+            target_cagr = year_data.get("target_cagr", 7.0) / 100  # Convert to decimal
+    
+    # Calculate end of year balances (growth + new contributions)
+    # Assuming contributions happen throughout the year, use half-year growth on new money
+    rrsp_growth_existing = rrsp_balance_start * target_cagr
+    rrsp_growth_new_contrib = total_rrsp_contributions * (target_cagr / 2)  # Half year average
+    rrsp_balance_end = rrsp_balance_start + rrsp_growth_existing + total_rrsp_contributions + rrsp_growth_new_contrib
+    
+    tfsa_growth_existing = tfsa_balance_start * target_cagr
+    tfsa_growth_new_contrib = tfsa_lump_sum * (target_cagr / 2)
+    tfsa_balance_end = tfsa_balance_start + tfsa_growth_existing + tfsa_lump_sum + tfsa_growth_new_contrib
+    
+    total_portfolio_value = rrsp_balance_end + tfsa_balance_end
+    
+    # Calculate tax refund
+    estimated_refund = calculate_tax_refund(total_gross_income, total_rrsp_contributions)
+    marginal_rate = get_marginal_rate(total_gross_income)
+    
+    # Optimization status
+    penthouse_threshold = 181440
+    is_optimized = taxable_income < penthouse_threshold
+    
+    # Header
+    st.title(f"🏛️ Tax Optimization Strategy: {selected_year}")
+    
+    # Status Card
+    col_status1, col_status2 = st.columns([3, 1])
+    
+    with col_status1:
+        description_box(
+            "Strategic Execution Framework",
+            f"Follow this comprehensive plan to maximize your tax efficiency and wealth velocity for {selected_year}. "
+            "Each section provides actionable insights to optimize your contribution strategy."
+        )
+    
+    # Portfolio Growth Dashboard
+    if rrsp_balance_start > 0 or tfsa_balance_start > 0:
+        st.divider()
+        st.markdown("### 💼 Portfolio Growth Tracker")
+        
+        description_box(
+            "Year-End Portfolio Projection",
+            f"Based on {target_cagr*100:.1f}% annual return assumption. Growth calculated on existing balance (full year) and new contributions (half year average)."
+        )
+        
+        # Create portfolio table
+        portfolio_table_data = []
+        
+        # RRSP Row
+        portfolio_table_data.append({
+            "Account": "RRSP",
+            "Start Balance": f"${rrsp_balance_start:,.0f}",
+            "New Contributions": f"${total_rrsp_contributions:,.0f}",
+            "Investment Growth": f"${rrsp_growth_existing + rrsp_growth_new_contrib:,.0f}",
+            "End Balance": f"${rrsp_balance_end:,.0f}",
+            "Net Gain": f"${rrsp_balance_end - rrsp_balance_start:,.0f}"
+        })
+        
+        # TFSA Row
+        portfolio_table_data.append({
+            "Account": "TFSA",
+            "Start Balance": f"${tfsa_balance_start:,.0f}",
+            "New Contributions": f"${tfsa_lump_sum:,.0f}",
+            "Investment Growth": f"${tfsa_growth_existing + tfsa_growth_new_contrib:,.0f}",
+            "End Balance": f"${tfsa_balance_end:,.0f}",
+            "Net Gain": f"${tfsa_balance_end - tfsa_balance_start:,.0f}"
+        })
+        
+        # Total Row
+        total_start = rrsp_balance_start + tfsa_balance_start
+        total_contributions = total_rrsp_contributions + tfsa_lump_sum
+        total_growth = (rrsp_growth_existing + rrsp_growth_new_contrib + 
+                      tfsa_growth_existing + tfsa_growth_new_contrib)
+        
+        portfolio_table_data.append({
+            "Account": "**TOTAL**",
+            "Start Balance": f"**${total_start:,.0f}**",
+            "New Contributions": f"**${total_contributions:,.0f}**",
+            "Investment Growth": f"**${total_growth:,.0f}**",
+            "End Balance": f"**${total_portfolio_value:,.0f}**",
+            "Net Gain": f"**${total_portfolio_value - total_start:,.0f}**"
+        })
+        
+        df_portfolio = pd.DataFrame(portfolio_table_data)
+        
+        st.dataframe(
+            df_portfolio,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Account": st.column_config.TextColumn("Account", width="small"),
+                "Start Balance": st.column_config.TextColumn("Start of Year", width="medium"),
+                "New Contributions": st.column_config.TextColumn("Contributions", width="medium"),
+                "Investment Growth": st.column_config.TextColumn(f"Growth @ {target_cagr*100:.1f}%", width="medium"),
+                "End Balance": st.column_config.TextColumn("Projected End", width="medium"),
+                "Net Gain": st.column_config.TextColumn("Total Gain", width="medium")
+            }
+        )
+        
+        # Quick insights
+        col_insight1, col_insight2, col_insight3 = st.columns(3)
+        
+        with col_insight1:
+            growth_rate_actual = ((total_growth / max(1, total_start)) * 100) if total_start > 0 else 0
+            st.metric("Portfolio Growth Rate", f"{growth_rate_actual:.2f}%", 
+                     help="Actual growth rate on starting balance")
+        
+        with col_insight2:
+            contribution_impact = ((total_contributions / max(1, total_portfolio_value)) * 100)
+            st.metric("Contribution Impact", f"{contribution_impact:.1f}%",
+                     help="% of end value from new contributions")
+        
+        with col_insight3:
+            investment_impact = ((total_growth / max(1, total_portfolio_value)) * 100)
+            st.metric("Investment Impact", f"{investment_impact:.1f}%",
+                     help="% of end value from market growth")
+    
+    st.divider()
+    
+    # Tax Building Visualizer
+    st.markdown("### 🏢 Tax Building Visualizer")
+    
+    description_box(
+        "Income Distribution Across Tax Brackets",
+        "This chart shows how your income is distributed across tax floors. "
+        "Blue bars represent tax-shielded income (protected by RRSP), "
+        "while orange bars show taxable income. Your goal: maximize the blue."
+    )
+    
+    # Build the tax building data
+    building_data = []
+    
+    for bracket in TAX_BRACKETS:
+        # Total income in this bracket
+        total_in_bracket = min(total_gross_income, bracket['high']) - bracket['low']
+        
+        if total_in_bracket <= 0:
+            continue
+        
+        # Taxable amount in this bracket
+        taxed_amt = max(0, min(bracket['high'], taxable_income) - bracket['low'])
+        
+        # Shielded amount in this bracket
+        shielded_amt = total_in_bracket - taxed_amt
+        
+        if shielded_amt > 0:
+            building_data.append({
+                "Floor": bracket['name'],
+                "Amount": shielded_amt,
+                "Status": "Tax-Shielded",
+                "Rate": f"{bracket['rate']*100:.2f}%"
+            })
+        
+        if taxed_amt > 0:
+            building_data.append({
+                "Floor": bracket['name'],
+                "Amount": taxed_amt,
+                "Status": "Taxable",
+                "Rate": f"{bracket['rate']*100:.2f}%"
+            })
+    
+    if building_data:
+        df_building = pd.DataFrame(building_data)
+        
+        # Create ordered floor list for proper sorting
+        floor_order = [b['name'] for b in TAX_BRACKETS]
+        
+        building_chart = alt.Chart(df_building).mark_bar().encode(
+            x=alt.X('Floor:N',
+                title='Tax Bracket Floor',
+                sort=floor_order
+            ),
+            y=alt.Y('Amount:Q',
+                title='Income Amount ($)',
+                stack='zero'
+            ),
+            color=alt.Color('Status:N',
+                scale=alt.Scale(
+                    domain=['Tax-Shielded', 'Taxable'],
+                    range=['#3b82f6', '#f59e0b']
+                ),
+                legend=alt.Legend(title="Status", orient="top")
+            ),
+            tooltip=[
+                alt.Tooltip('Floor:N', title='Bracket'),
+                alt.Tooltip('Status:N', title='Status'),
+                alt.Tooltip('Amount:Q', title='Amount', format='$,.0f'),
+                alt.Tooltip('Rate:N', title='Tax Rate')
+            ]
+        ).properties(
+            height=400
+        )
+        
+        st.altair_chart(building_chart, use_container_width=True)
+    else:
+        st.info("Enter your income parameters in the sidebar to see the tax building visualization.")
+    
+    st.divider()
+    
+    # Strategic Prioritization
+    st.markdown("### 🎯 Strategic Prioritization Matrix")
+    
+    description_box(
+        "Optimization Roadmap",
+        f"**Goal**: Reduce taxable income below ${penthouse_threshold:,.0f} to avoid the Penthouse bracket (47.97% tax rate). "
+        f"Current status: {'✅ Optimized' if is_optimized else '⚠️ Needs Optimization'}"
+    )
+    
+    # Calculate optimization metrics
+    penthouse_income = max(0, taxable_income - penthouse_threshold)
+    penthouse_shield_needed = max(0, total_gross_income - penthouse_threshold - total_rrsp_contributions)
+    remaining_rrsp_room = max(0, rrsp_room - total_rrsp_contributions)
+    remaining_tfsa_room = max(0, tfsa_room - tfsa_lump_sum)
+    
+    # Priority 1: Penthouse Shield
+    if penthouse_income > 0:
+        priority_1_status = f"⚠️ ${penthouse_income:,.0f} in Penthouse"
+        priority_1_action = f"Increase RRSP by ${penthouse_shield_needed:,.0f}"
+        priority_1_impact = f"Save ${penthouse_income * 0.4797:,.0f} in taxes (47.97% rate)"
+        priority_1_class = "priority-high"
+        
+        # Show progress bar
+        optimization_progress = min(1.0, (penthouse_threshold / max(1, taxable_income)))
+        st.markdown("**Optimization Progress:**")
+        st.progress(optimization_progress)
+        st.caption(f"{optimization_progress*100:.1f}% optimized - Need to reduce taxable income by ${penthouse_income:,.0f}")
+    else:
+        priority_1_status = "✅ Optimized"
+        priority_1_action = "No Penthouse exposure"
+        priority_1_impact = f"Maximum efficiency at {marginal_rate*100:.2f}% bracket"
+        priority_1_class = "priority-medium"
+        
+        st.markdown("**Optimization Progress:**")
+        st.progress(1.0)
+        st.caption("✅ 100% optimized - Below Penthouse threshold!")
+    
+    st.markdown(f'''
+        <div class="premium-card {priority_1_class}">
+            <h4>Priority 1: High-Rate Tax Shield</h4>
+            <p><strong>Status:</strong> {priority_1_status}</p>
+            <p><strong>Action:</strong> {priority_1_action}</p>
+            <p><strong>Impact:</strong> {priority_1_impact}</p>
+        </div>
+    ''', unsafe_allow_html=True)
+    
+    # Priority 2: TFSA Maximization
+    st.markdown(f'''
+        <div class="premium-card priority-medium">
+            <h4>Priority 2: Tax-Free Growth Acceleration</h4>
+            <p><strong>Status:</strong> ${remaining_tfsa_room:,.0f} TFSA room remaining</p>
+            <p><strong>Action:</strong> Maximize TFSA contributions for tax-free compounding</p>
+            <p><strong>Impact:</strong> All future gains grow tax-free forever</p>
+        </div>
+    ''', unsafe_allow_html=True)
+    
+    st.divider()
+    
+    # THE FEEDBACK LOOP - Tax Refund Reinvestment
+    st.markdown("### 🔄 The Feedback Loop: Refund Reinvestment")
+    
+    description_box(
+        "Strategic Refund Deployment",
+        f"Your RRSP contributions of ${total_rrsp_contributions:,.0f} will generate an estimated tax refund of ${estimated_refund:,.0f}. "
+        "Deploy this refund strategically into your TFSA to accelerate tax-free wealth growth."
+    )
+    
+    col_refund1, col_refund2, col_refund3 = st.columns(3)
+    
+    with col_refund1:
+        st.metric(
+            "Tax Refund Generated",
+            f"${estimated_refund:,.0f}",
+            help="Estimated refund from RRSP tax deductions"
+        )
+    
+    with col_refund2:
+        available_for_tfsa = min(estimated_refund, remaining_tfsa_room)
+        st.metric(
+            "Available for TFSA",
+            f"${available_for_tfsa:,.0f}",
+            help="Refund amount that fits in remaining TFSA room"
+        )
+    
+    with col_refund3:
+        reinvest_pct = (available_for_tfsa / max(1, estimated_refund)) * 100
+        st.metric(
+            "Reinvestment Rate",
+            f"{reinvest_pct:.1f}%",
+            help="Percentage of refund deployable to TFSA"
+        )
+    
+    # Refund deployment calculator
+    with st.expander("🧮 Refund Deployment Calculator", expanded=True):
+        st.markdown("**Strategic Question:** How much of your tax refund will you reinvest into your TFSA?")
+        
+        if estimated_refund > 0:
+            refund_to_deploy = st.slider(
+                "Amount to reinvest in TFSA",
+                0.0,
+                float(estimated_refund),
+                value=min(float(estimated_refund), float(remaining_tfsa_room)),
+                step=100.0
+            )
+            
+            st.caption(f"Selected amount: ${refund_to_deploy:,.0f}")
+            
+            col_deploy1, col_deploy2 = st.columns(2)
+            
+            with col_deploy1:
+                st.markdown("**Deployment Impact:**")
+                new_tfsa_total = tfsa_lump_sum + refund_to_deploy
+                new_tfsa_room = max(0, tfsa_room - new_tfsa_total)
+                
+                st.write(f"- Total TFSA contribution: ${new_tfsa_total:,.0f}")
+                st.write(f"- Remaining TFSA room: ${new_tfsa_room:,.0f}")
+                st.write(f"- Combined tax-advantaged savings: ${total_rrsp_contributions + new_tfsa_total:,.0f}")
+            
+            with col_deploy2:
+                st.markdown("**20-Year Growth Projection:**")
+                # Assuming 7% annual return
+                growth_rate = 0.07
+                years = 20
+                future_value = refund_to_deploy * ((1 + growth_rate) ** years)
+                tax_saved_at_withdrawal = future_value * marginal_rate
+                
+                st.write(f"- Refund deployed: ${refund_to_deploy:,.0f}")
+                st.write(f"- Future value @ 7%: ${future_value:,.0f}")
+                st.write(f"- Tax saved (vs. taxable): ${tax_saved_at_withdrawal:,.0f}")
+        else:
+            st.info("💡 Make RRSP contributions to generate a tax refund that can be reinvested into your TFSA for tax-free growth.")
+    
+    st.divider()
+    
+    # March 1st Deadline Dashboard
+    st.markdown(f"### 📅 March 1st Deadline Dashboard ({selected_year + 1})")
+    
+    col_deadline = st.columns([3, 1])
+    with col_deadline[1]:
+        components.html('''
+            <button onclick="window.print()" 
+                style="width: 100%; height: 60px; background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%); 
+                color: white; border: none; border-radius: 10px; font-weight: 600; 
+                cursor: pointer; box-shadow: 0 4px 6px rgba(59, 130, 246, 0.4);
+                transition: all 0.3s ease;">
+                📄 Save as PDF
+            </button>
+        ''', height=80)
+    
+    st.markdown(f"""
+        <div class="premium-card">
+            <h4>Critical Action Items Before March 1, {selected_year + 1}</h4>
+            <p style="color: #64748b; margin-bottom: 20px;">
+                These deposits must be completed to claim deductions for tax year {selected_year}
+            </p>
+        </div>
+    """, unsafe_allow_html=True)
+    
+    ac1, ac2, ac3, ac4, ac5 = st.columns(5)
+    
+    with ac1:
+        st.metric(
+            "RRSP Optimization",
+            f"${rrsp_lump_sum_optimization:,.0f}",
+            help="Strategic deposit for tax bracket optimization"
+        )
+    
+    with ac2:
+        st.metric(
+            "RRSP Additional",
+            f"${rrsp_lump_sum_additional:,.0f}",
+            help="Extra contributions for maximum refund"
+        )
+    
+    with ac3:
+        st.metric(
+            "TFSA Deposit",
+            f"${tfsa_lump_sum:,.0f}",
+            help="Tax-free savings contribution"
+        )
+    
+    with ac4:
+        st.metric(
+            "Expected Refund",
+            f"${estimated_refund:,.0f}",
+            delta=f"+{(estimated_refund/max(1,total_rrsp_contributions))*100:.1f}%",
+            help="Tax refund from all RRSP contributions"
+        )
+    
+    with ac5:
+        net_cashflow = estimated_refund - rrsp_lump_sum - tfsa_lump_sum
+        st.metric(
+            "Net Cashflow Impact",
+            f"${net_cashflow:,.0f}",
+            delta="Surplus" if net_cashflow >= 0 else "Investment",
+            delta_color="normal" if net_cashflow >= 0 else "inverse",
+            help="Refund minus deposits"
+        )
+    
+    st.divider()
+    
+    # Carryover Room Projection
+    st.markdown(f"### ⏭️ {selected_year + 1} Carryover Room Projection")
+    
+    description_box(
+        "Forward-Looking Planning",
+        f"Based on CRA's indexed limits and your {selected_year} contributions, "
+        "here's your projected contribution room for next year."
+    )
+    
+    # RRSP new room calculation (18% of income, max $31,560 for 2025)
+    rrsp_earned_room = min(31560, total_gross_income * 0.18)
+    projected_rrsp_room = remaining_rrsp_room + rrsp_earned_room
+    
+    # TFSA new room (indexed amount, $7,000 for 2025)
+    tfsa_earned_room = 7000
+    projected_tfsa_room = remaining_tfsa_room + tfsa_earned_room
+    
+    col_carry1, col_carry2 = st.columns(2)
+    
+    with col_carry1:
+        st.markdown("**RRSP Room Evolution**")
+        st.metric(
+            f"{selected_year + 1} Projected RRSP Room",
+            f"${projected_rrsp_room:,.0f}",
+            delta=f"+${rrsp_earned_room:,.0f} new",
+            help="Unused room + newly earned contribution room"
+        )
+        
+        st.progress(min(1.0, total_rrsp_contributions / max(1, rrsp_room)))
+        st.caption(f"You used {(total_rrsp_contributions/max(1,rrsp_room))*100:.1f}% of available RRSP room in {selected_year}")
+    
+    with col_carry2:
+        st.markdown("**TFSA Room Evolution**")
+        st.metric(
+            f"{selected_year + 1} Projected TFSA Room",
+            f"${projected_tfsa_room:,.0f}",
+            delta=f"+${tfsa_earned_room:,.0f} new",
+            help="Unused room + annual indexed increase"
+        )
+        
+        st.progress(min(1.0, tfsa_lump_sum / max(1, tfsa_room)))
+        st.caption(f"You used {(tfsa_lump_sum/max(1,tfsa_room))*100:.1f}% of available TFSA room in {selected_year}")
+    
+    st.divider()
+    
+    # Tax Bracket Reference
+    st.markdown("### 📑 Ontario Tax Bracket Reference (Combined Federal + Provincial)")
+    
+    with st.expander("📊 View Detailed Bracket Information", expanded=False):
+        description_box(
+            "2025/2026 Marginal Tax Rates",
+            "These are the combined federal and Ontario provincial marginal tax rates. "
+            "Your marginal rate is the tax you pay on each additional dollar earned."
+        )
+        
+        bracket_df = pd.DataFrame([
+            {
+                "Floor Level": bracket['name'],
+                "Income Range": f"${bracket['low']:,} - ${bracket['high']:,}" if bracket['high'] != float('inf') else f"${bracket['low']:,}+",
+                "Marginal Rate": f"{bracket['rate']*100:.2f}%",
+                "Tax on $1,000": f"${1000 * bracket['rate']:.2f}"
+            }
+            for bracket in TAX_BRACKETS
+        ])
+        
+        st.dataframe(
+            bracket_df,
+            use_container_width=True,
+            hide_index=True
+        )
+        
+        # Highlight current bracket
+        current_bracket = None
+        for bracket in TAX_BRACKETS:
+            if bracket['low'] <= taxable_income < bracket['high']:
+                current_bracket = bracket
+                break
+        
+        if current_bracket and taxable_income > 0:
+            st.info(f"📍 Your current marginal bracket: **{current_bracket['name']}** at **{current_bracket['rate']*100:.2f}%**")
+    
+    # Strategic Insights
+    st.divider()
+    st.markdown("### 💡 Strategic Insights & Recommendations")
+    
+    insights = []
+    
+    # Insight 1: Penthouse exposure
+    if penthouse_income > 0:
+        insights.append({
+            "icon": "⚠️",
+            "title": "High Priority: Penthouse Exposure",
+            "message": f"You have ${penthouse_income:,.0f} exposed to the Penthouse rate (47.97%). "
+                      f"Consider depositing an additional ${penthouse_shield_needed:,.0f} to your RRSP before March 1st "
+                      f"to save ${penthouse_income * 0.4797:,.0f} in taxes.",
+            "priority": "high"
+        })
+    
+    # Insight 2: Unused RRSP room
+    if remaining_rrsp_room > 10000:
+        insights.append({
+            "icon": "💰",
+            "title": "Opportunity: Unused RRSP Room",
+            "message": f"You have ${remaining_rrsp_room:,.0f} of unused RRSP room. "
+                      f"At your marginal rate of {marginal_rate*100:.2f}%, every additional $10,000 contributed "
+                      f"would generate a ${10000 * marginal_rate:,.0f} tax refund.",
+            "priority": "medium"
+        })
+    
+    # Insight 3: TFSA optimization
+    if remaining_tfsa_room > 5000:
+        insights.append({
+            "icon": "🌱",
+            "title": "Growth Opportunity: TFSA Capacity",
+            "message": f"You have ${remaining_tfsa_room:,.0f} of unused TFSA room. "
+                      f"Consider deploying your ${estimated_refund:,.0f} tax refund into this tax-free growth vehicle. "
+                      f"Over 20 years at 7% annual returns, this could grow to ${estimated_refund * (1.07**20):,.0f} tax-free.",
+            "priority": "medium"
+        })
+    
+    # Insight 4: Employer match
+    if employer_match > 0:
+        employer_contribution = base_salary * (employer_match / 100)
+        employee_contribution = base_salary * (biweekly_pct / 100)
+        
+        if employee_contribution > 0:
+            instant_return_pct = (employer_contribution / employee_contribution) * 100
+            insights.append({
+                "icon": "🎁",
+                "title": "Free Money: Employer Match",
+                "message": f"Your employer is contributing ${employer_contribution:,.0f} annually ({employer_match}% match). "
+                          f"This represents a **{instant_return_pct:.1f}% instant return** on your ${employee_contribution:,.0f} contribution. "
+                          f"Employer matching is the single best investment return available - always maximize it first.",
+                "priority": "high"
+            })
+        else:
+            insights.append({
+                "icon": "🎁",
+                "title": "Free Money: Employer Match Available",
+                "message": f"Your employer offers a {employer_match}% match (${employer_contribution:,.0f} potential free money). "
+                          f"You're currently not contributing, so you're leaving this free money on the table. "
+                          f"Start contributing to claim this benefit.",
+                "priority": "high"
+            })
+    
+    # Insight 5: Efficiency score
+    efficiency_score = (total_rrsp_contributions / max(1, rrsp_room)) * 0.5 + \
+                      (tfsa_lump_sum / max(1, tfsa_room)) * 0.5
+    
+    if efficiency_score < 0.5:
+        insights.append({
+            "icon": "📈",
+            "title": "Efficiency Opportunity",
+            "message": f"Your contribution room utilization is {efficiency_score*100:.1f}%. "
+                      f"You're leaving significant tax advantages on the table. "
+                      f"Consider increasing your automatic contributions or making larger lump-sum deposits.",
+            "priority": "medium"
+        })
+    elif efficiency_score > 0.8:
+        insights.append({
+            "icon": "✨",
+            "title": "Excellent Optimization",
+            "message": f"Your contribution room utilization is {efficiency_score*100:.1f}%. "
+                      f"You're making excellent use of your available tax-advantaged space. "
+                      f"Keep up this disciplined approach to wealth building!",
+            "priority": "high"
+        })
+    
+    # Display insights
+    for insight in insights:
+        priority_class = "priority-high" if insight['priority'] == "high" else "priority-medium"
+        st.markdown(f'''
+            <div class="premium-card {priority_class}">
+                <h4>{insight['icon']} {insight['title']}</h4>
+                <p style="line-height: 1.6;">{insight['message']}</p>
+            </div>
+        ''', unsafe_allow_html=True)
+    
+    if not insights:
+        st.success("✅ Your strategy is well-optimized! No critical action items identified.")
+
+# Footer
+st.divider()
+st.markdown("""
+    <div style="text-align: center; color: #64748b; padding: 20px;">
+        <p><strong>Canadian Tax & Wealth Velocity Suite</strong></p>
+        <p style="font-size: 0.9em;">
+            Tax rates are based on 2025/2026 Ontario combined federal + provincial brackets. 
+            Always consult with a qualified tax professional for personalized advice.
+        </p>
+        <p style="font-size: 0.85em; margin-top: 10px;">
+            RRSP contribution limit: 18% of previous year's income (max $31,560) | 
+            TFSA annual limit: $7,000
+        </p>
+    </div>
+""", unsafe_allow_html=True)
+    
+    with col_status2:
+        if is_optimized:
+            st.markdown("""
+                <div style="background: linear-gradient(135deg, #d1fae5 0%, #a7f3d0 100%); 
+                     padding: 20px; border-radius: 12px; border: 2px solid #10b981; text-align: center;">
+                    <div style="font-size: 3em;">🟢</div>
+                    <div style="font-size: 1.2em; font-weight: 600; color: #065f46; margin-top: 10px;">
+                        OPTIMIZED
+                    </div>
+                    <div style="font-size: 0.9em; color: #047857; margin-top: 5px;">
+                        This year will show GREEN
+                    </div>
+                </div>
+            """, unsafe_allow_html=True)
+    
+    # Key Metrics Dashboard
+    st.markdown("### 📊 Strategic Overview")
+    
+    if other_income > 0:
+        st.info(f"💼 Income Breakdown: T4 ${t4_gross_income:,.0f} + Other ${other_income:,.0f} = Total ${total_gross_income:,.0f}")
+    
+    # Optimization Status Banner
+    if is_optimized:
+        st.success(f"🟢 **OPTIMIZED** - Your taxable income (${taxable_income:,.0f}) is below the Penthouse threshold (${penthouse_threshold:,.0f}). This year will show GREEN on the home page.")
+    else:
+        deficit = taxable_income - penthouse_threshold
+        additional_rrsp_needed = deficit
+        st.warning(f"🟠 **IN PROGRESS** - Your taxable income (${taxable_income:,.0f}) exceeds the Penthouse threshold by ${deficit:,.0f}. "
+                  f"Add ${additional_rrsp_needed:,.0f} more to RRSP contributions to achieve GREEN optimization status and save ${deficit * 0.4797:,.0f} in taxes.")
+    
+    col1, col2, col3, col4, col5 = st.columns(5)
+    
+    with col1:
+        st.metric(
+            "Total Gross Income",
+            f"${total_gross_income:,.0f}",
+            delta=f"+${other_income:,.0f} other" if other_income > 0 else None,
+            help="T4 employment income plus other taxable income"
+        )
+    
+    with col2:
+        st.metric(
+            "Tax-Shielded Income",
+            f"${taxable_income:,.0f}",
+            delta=f"-${total_rrsp_contributions:,.0f}",
+            delta_color="inverse",
+            help="Income after RRSP deductions"
+        )
+    
+    with col3:
+        st.metric(
+            "Marginal Tax Rate",
+            f"{marginal_rate*100:.2f}%",
+            help="Your current tax bracket rate"
+        )
+    
+    with col4:
+        st.metric(
+            "Estimated Tax Refund",
+            f"${estimated_refund:,.0f}",
+            delta=f"+{(estimated_refund/max(1,total_rrsp_contributions))*100:.1f}% ROI",
+            help="Tax refund from RRSP contributions"
+        )
+    
+    with col5:
+        st.metric(
+            "Total Portfolio Value",
+            f"${total_portfolio_value:,.0f}",
+            delta=f"+{target_cagr*100:.1f}% target",
+            help="Combined RRSP + TFSA projected end-of-year value"
+        )
+        else:
+            st.markdown("""
+                <div style="background: linear-gradient(135deg, #fed7aa 0%, #fdba74 100%); 
+                     padding: 20px; border-radius: 12px; border: 2px solid #f97316; text-align: center;">
+                    <div style="font-size: 3em;">🟠</div>
+                    <div style="font-size: 1.2em; font-weight: 600; color: #7c2d12; margin-top: 10px;">
+                        IN PROGRESS
+                    </div>
+                    <div style="font-size: 0.9em; color: #9a3412; margin-top: 5px;">
+                        More RRSP needed
+                    </div>
+                </div>
+            """, unsafe_allow_html=True) = latest_data.get("target_cagr", 7.0) / 100
             rrsp_start = latest_data.get("rrsp_balance_start", 0)
             tfsa_start = latest_data.get("tfsa_balance_start", 0)
             
             annual_rrsp = (latest_data.get('base_salary', 0) * 
                           (latest_data.get('biweekly_pct', 0) + latest_data.get('employer_match', 0)) / 100) + \
+                          latest_data.get('rrsp_lump_sum_optimization', 0) + \
+                          latest_data.get('rrsp_lump_sum_additional', 0) + \
                           latest_data.get('rrsp_lump_sum', 0)
             tfsa_contrib = latest_data.get('tfsa_lump_sum', 0)
             
@@ -363,6 +1045,10 @@ if st.session_state.current_page == "Home":
         for yr in sorted(all_history.keys(), key=lambda x: int(x)):
             data = all_history[yr]
             
+            t4_gross = data.get('t4_gross_income', 0)
+            other_inc = data.get('other_income', 0)
+            total_gross = t4_gross + other_inc
+            
             target_cagr = data.get("target_cagr", 7.0) / 100
             rrsp_start = data.get("rrsp_balance_start", 0)
             tfsa_start = data.get("tfsa_balance_start", 0)
@@ -371,7 +1057,7 @@ if st.session_state.current_page == "Home":
                           (data.get('biweekly_pct', 0) + data.get('employer_match', 0)) / 100) + \
                           data.get('rrsp_lump_sum_optimization', 0) + \
                           data.get('rrsp_lump_sum_additional', 0) + \
-                          data.get('rrsp_lump_sum', 0)  # Legacy support
+                          data.get('rrsp_lump_sum', 0)  # Legacy
             tfsa_contrib = data.get('tfsa_lump_sum', 0)
             
             # Start of year
@@ -794,14 +1480,13 @@ if st.session_state.current_page == "Home":
 else:
     selected_year = st.session_state.selected_year
     year_data = all_history.get(str(selected_year), {})
-    
-    # Sidebar with form for inputs
+
     with st.sidebar:
         if st.button("⬅️ Back to Home", use_container_width=True):
             st.session_state.current_page = "Home"
             st.rerun()
         
-        st.markdown(f"## ⚙️ {selected_year} Strategy")
+        st.header(f"⚙️ {selected_year} Parameters")
         
         with st.form(key="input_form"):
             st.markdown("### 💵 Income Parameters")
@@ -892,14 +1577,19 @@ else:
                 prev_annual_rrsp = (prev_data.get('base_salary', 0) * 
                                    (prev_data.get('biweekly_pct', 0) + prev_data.get('employer_match', 0)) / 100) + \
                                    prev_data.get('rrsp_lump_sum_optimization', 0) + \
-                                   prev_data.get('rrsp_lump_sum_additional', 0)
+                                   prev_data.get('rrsp_lump_sum_additional', 0) + \
+                                   prev_data.get('rrsp_lump_sum', 0)  # Legacy
                 prev_tfsa_contrib = prev_data.get('tfsa_lump_sum', 0)
                 
                 prev_rrsp_room_remaining = max(0, prev_data.get('rrsp_room', 0) - prev_annual_rrsp)
                 prev_tfsa_room_remaining = max(0, prev_data.get('tfsa_room', 0) - prev_tfsa_contrib)
                 
-                # Add new room for current year
-                new_rrsp_room = min(31560, prev_data.get('t4_gross_income', 0) * 0.18)
+                # Add new room for current year (based on previous year's total gross income)
+                prev_t4_gross = prev_data.get('t4_gross_income', 0)
+                prev_other_income = prev_data.get('other_income', 0)
+                prev_total_gross = prev_t4_gross + prev_other_income
+                
+                new_rrsp_room = min(31560, prev_total_gross * 0.18)
                 new_tfsa_room = 7000
                 
                 default_rrsp_room = prev_rrsp_room_remaining + new_rrsp_room
@@ -1043,680 +1733,4 @@ else:
     # Portfolio calculations
     rrsp_balance_start = year_data.get("rrsp_balance_start", 0)
     tfsa_balance_start = year_data.get("tfsa_balance_start", 0)
-    target_cagr = year_data.get("target_cagr", 7.0) / 100  # Convert to decimal
-    
-    # Calculate end of year balances (growth + new contributions)
-    # Assuming contributions happen throughout the year, use half-year growth on new money
-    rrsp_growth_existing = rrsp_balance_start * target_cagr
-    rrsp_growth_new_contrib = total_rrsp_contributions * (target_cagr / 2)  # Half year average
-    rrsp_balance_end = rrsp_balance_start + rrsp_growth_existing + total_rrsp_contributions + rrsp_growth_new_contrib
-    
-    tfsa_growth_existing = tfsa_balance_start * target_cagr
-    tfsa_growth_new_contrib = tfsa_lump_sum * (target_cagr / 2)
-    tfsa_balance_end = tfsa_balance_start + tfsa_growth_existing + tfsa_lump_sum + tfsa_growth_new_contrib
-    
-    total_portfolio_value = rrsp_balance_end + tfsa_balance_end
-    
-    # Calculate tax refund
-    estimated_refund = calculate_tax_refund(total_gross_income, total_rrsp_contributions)
-    marginal_rate = get_marginal_rate(total_gross_income)
-    
-    # Optimization status
-    penthouse_threshold = 181440
-    is_optimized = taxable_income < penthouse_threshold
-    
-    # Header
-    st.title(f"🏛️ Tax Optimization Strategy: {selected_year}")
-    
-    # Status Card
-    col_status1, col_status2 = st.columns([3, 1])
-    
-    with col_status1:
-        description_box(
-            "Strategic Execution Framework",
-            f"Follow this comprehensive plan to maximize your tax efficiency and wealth velocity for {selected_year}. "
-            "Each section provides actionable insights to optimize your contribution strategy."
-        )
-    
-    with col_status2:
-        if is_optimized:
-            st.markdown("""
-                <div style="background: linear-gradient(135deg, #d1fae5 0%, #a7f3d0 100%); 
-                     padding: 20px; border-radius: 12px; border: 2px solid #10b981; text-align: center;">
-                    <div style="font-size: 3em;">🟢</div>
-                    <div style="font-size: 1.2em; font-weight: 600; color: #065f46; margin-top: 10px;">
-                        OPTIMIZED
-                    </div>
-                    <div style="font-size: 0.9em; color: #047857; margin-top: 5px;">
-                        This year will show GREEN
-                    </div>
-                </div>
-            """, unsafe_allow_html=True)
-        else:
-            st.markdown("""
-                <div style="background: linear-gradient(135deg, #fed7aa 0%, #fdba74 100%); 
-                     padding: 20px; border-radius: 12px; border: 2px solid #f97316; text-align: center;">
-                    <div style="font-size: 3em;">🟠</div>
-                    <div style="font-size: 1.2em; font-weight: 600; color: #7c2d12; margin-top: 10px;">
-                        IN PROGRESS
-                    </div>
-                    <div style="font-size: 0.9em; color: #9a3412; margin-top: 5px;">
-                        More RRSP needed
-                    </div>
-                </div>
-            """, unsafe_allow_html=True)
-    
-    # Key Metrics Dashboard
-    st.markdown("### 📊 Strategic Overview")
-    
-    if other_income > 0:
-        st.info(f"💼 Income Breakdown: T4 ${t4_gross_income:,.0f} + Other ${other_income:,.0f} = Total ${total_gross_income:,.0f}")
-    
-    # Optimization Status Banner
-    
-    if is_optimized:
-        st.success(f"🟢 **OPTIMIZED** - Your taxable income (${taxable_income:,.0f}) is below the Penthouse threshold (${penthouse_threshold:,.0f}). This year will show GREEN on the home page.")
-    else:
-        deficit = taxable_income - penthouse_threshold
-        additional_rrsp_needed = deficit
-        st.warning(f"🟠 **IN PROGRESS** - Your taxable income (${taxable_income:,.0f}) exceeds the Penthouse threshold by ${deficit:,.0f}. "
-                  f"Add ${additional_rrsp_needed:,.0f} more to RRSP contributions to achieve GREEN optimization status and save ${deficit * 0.4797:,.0f} in taxes.")
-    
-    col1, col2, col3, col4, col5 = st.columns(5)
-    
-    with col1:
-        st.metric(
-            "Total Gross Income",
-            f"${total_gross_income:,.0f}",
-            delta=f"+${other_income:,.0f} other" if other_income > 0 else None,
-            help="T4 employment income plus other taxable income"
-        )
-    
-    with col2:
-        st.metric(
-            "Tax-Shielded Income",
-            f"${taxable_income:,.0f}",
-            delta=f"-${total_rrsp_contributions:,.0f}",
-            delta_color="inverse",
-            help="Income after RRSP deductions"
-        )
-    
-    with col3:
-        st.metric(
-            "Marginal Tax Rate",
-            f"{marginal_rate*100:.2f}%",
-            help="Your current tax bracket rate"
-        )
-    
-    with col4:
-        st.metric(
-            "Estimated Tax Refund",
-            f"${estimated_refund:,.0f}",
-            delta=f"+{(estimated_refund/max(1,total_rrsp_contributions))*100:.1f}% ROI",
-            help="Tax refund from RRSP contributions"
-        )
-    
-    with col5:
-        st.metric(
-            "Total Portfolio Value",
-            f"${total_portfolio_value:,.0f}",
-            delta=f"+{target_cagr*100:.1f}% target",
-            help="Combined RRSP + TFSA projected end-of-year value"
-        )
-    
-    # Portfolio Growth Dashboard
-    if rrsp_balance_start > 0 or tfsa_balance_start > 0:
-        st.divider()
-        st.markdown("### 💼 Portfolio Growth Tracker")
-        
-        description_box(
-            "Year-End Portfolio Projection",
-            f"Based on {target_cagr*100:.1f}% annual return assumption. Growth calculated on existing balance (full year) and new contributions (half year average)."
-        )
-        
-        # Create portfolio table
-        portfolio_table_data = []
-        
-        # RRSP Row
-        portfolio_table_data.append({
-            "Account": "RRSP",
-            "Start Balance": f"${rrsp_balance_start:,.0f}",
-            "New Contributions": f"${total_rrsp_contributions:,.0f}",
-            "Investment Growth": f"${rrsp_growth_existing + rrsp_growth_new_contrib:,.0f}",
-            "End Balance": f"${rrsp_balance_end:,.0f}",
-            "Net Gain": f"${rrsp_balance_end - rrsp_balance_start:,.0f}"
-        })
-        
-        # TFSA Row
-        portfolio_table_data.append({
-            "Account": "TFSA",
-            "Start Balance": f"${tfsa_balance_start:,.0f}",
-            "New Contributions": f"${tfsa_lump_sum:,.0f}",
-            "Investment Growth": f"${tfsa_growth_existing + tfsa_growth_new_contrib:,.0f}",
-            "End Balance": f"${tfsa_balance_end:,.0f}",
-            "Net Gain": f"${tfsa_balance_end - tfsa_balance_start:,.0f}"
-        })
-        
-        # Total Row
-        total_start = rrsp_balance_start + tfsa_balance_start
-        total_contributions = total_rrsp_contributions + tfsa_lump_sum
-        total_growth = (rrsp_growth_existing + rrsp_growth_new_contrib + 
-                      tfsa_growth_existing + tfsa_growth_new_contrib)
-        
-        portfolio_table_data.append({
-            "Account": "**TOTAL**",
-            "Start Balance": f"**${total_start:,.0f}**",
-            "New Contributions": f"**${total_contributions:,.0f}**",
-            "Investment Growth": f"**${total_growth:,.0f}**",
-            "End Balance": f"**${total_portfolio_value:,.0f}**",
-            "Net Gain": f"**${total_portfolio_value - total_start:,.0f}**"
-        })
-        
-        df_portfolio = pd.DataFrame(portfolio_table_data)
-        
-        st.dataframe(
-            df_portfolio,
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "Account": st.column_config.TextColumn("Account", width="small"),
-                "Start Balance": st.column_config.TextColumn("Start of Year", width="medium"),
-                "New Contributions": st.column_config.TextColumn("Contributions", width="medium"),
-                "Investment Growth": st.column_config.TextColumn(f"Growth @ {target_cagr*100:.1f}%", width="medium"),
-                "End Balance": st.column_config.TextColumn("Projected End", width="medium"),
-                "Net Gain": st.column_config.TextColumn("Total Gain", width="medium")
-            }
-        )
-        
-        # Quick insights
-        col_insight1, col_insight2, col_insight3 = st.columns(3)
-        
-        with col_insight1:
-            growth_rate_actual = ((total_growth / max(1, total_start)) * 100) if total_start > 0 else 0
-            st.metric("Portfolio Growth Rate", f"{growth_rate_actual:.2f}%", 
-                     help="Actual growth rate on starting balance")
-        
-        with col_insight2:
-            contribution_impact = ((total_contributions / max(1, total_portfolio_value)) * 100)
-            st.metric("Contribution Impact", f"{contribution_impact:.1f}%",
-                     help="% of end value from new contributions")
-        
-        with col_insight3:
-            investment_impact = ((total_growth / max(1, total_portfolio_value)) * 100)
-            st.metric("Investment Impact", f"{investment_impact:.1f}%",
-                     help="% of end value from market growth")
-    
-    st.divider()
-    
-    # Tax Building Visualizer
-    st.markdown("### 🏢 Tax Building Visualizer")
-    
-    description_box(
-        "Income Distribution Across Tax Brackets",
-        "This chart shows how your income is distributed across tax floors. "
-        "Blue bars represent tax-shielded income (protected by RRSP), "
-        "while orange bars show taxable income. Your goal: maximize the blue."
-    )
-    
-    # Build the tax building data
-    building_data = []
-    
-    for bracket in TAX_BRACKETS:
-        # Total income in this bracket
-        total_in_bracket = min(total_gross_income, bracket['high']) - bracket['low']
-        
-        if total_in_bracket <= 0:
-            continue
-        
-        # Taxable amount in this bracket
-        taxed_amt = max(0, min(bracket['high'], taxable_income) - bracket['low'])
-        
-        # Shielded amount in this bracket
-        shielded_amt = total_in_bracket - taxed_amt
-        
-        if shielded_amt > 0:
-            building_data.append({
-                "Floor": bracket['name'],
-                "Amount": shielded_amt,
-                "Status": "Tax-Shielded",
-                "Rate": f"{bracket['rate']*100:.2f}%"
-            })
-        
-        if taxed_amt > 0:
-            building_data.append({
-                "Floor": bracket['name'],
-                "Amount": taxed_amt,
-                "Status": "Taxable",
-                "Rate": f"{bracket['rate']*100:.2f}%"
-            })
-    
-    if building_data:
-        df_building = pd.DataFrame(building_data)
-        
-        # Create ordered floor list for proper sorting
-        floor_order = [b['name'] for b in TAX_BRACKETS]
-        
-        building_chart = alt.Chart(df_building).mark_bar().encode(
-            x=alt.X('Floor:N',
-                title='Tax Bracket Floor',
-                sort=floor_order
-            ),
-            y=alt.Y('Amount:Q',
-                title='Income Amount ($)',
-                stack='zero'
-            ),
-            color=alt.Color('Status:N',
-                scale=alt.Scale(
-                    domain=['Tax-Shielded', 'Taxable'],
-                    range=['#3b82f6', '#f59e0b']
-                ),
-                legend=alt.Legend(title="Status", orient="top")
-            ),
-            tooltip=[
-                alt.Tooltip('Floor:N', title='Bracket'),
-                alt.Tooltip('Status:N', title='Status'),
-                alt.Tooltip('Amount:Q', title='Amount', format='$,.0f'),
-                alt.Tooltip('Rate:N', title='Tax Rate')
-            ]
-        ).properties(
-            height=400
-        )
-        
-        st.altair_chart(building_chart, use_container_width=True)
-    else:
-        st.info("Enter your income parameters in the sidebar to see the tax building visualization.")
-    
-    st.divider()
-    
-    # Strategic Prioritization
-    st.markdown("### 🎯 Strategic Prioritization Matrix")
-    
-    penthouse_threshold = 181440
-        penthouse_income = max(0, taxable_income - penthouse_threshold)
-    penthouse_shield_needed = max(0, total_gross_income - penthouse_threshold - total_rrsp_contributions)
-    
-    remaining_rrsp_room = max(0, rrsp_room - total_rrsp_contributions)
-    remaining_tfsa_room = max(0, tfsa_room - tfsa_lump_sum)
-    
-    # Priority 1: Penthouse Shield
-    if penthouse_income > 0:
-        priority_1_status = f"⚠️ ${penthouse_income:,.0f} in Penthouse"
-        priority_1_action = f"Increase RRSP by ${penthouse_shield_needed:,.0f}"
-        priority_1_impact = f"Save ${penthouse_income * 0.4797:,.0f} in taxes (47.97% rate)"
-        priority_1_class = "priority-high"
-        
-        # Show progress bar
-        optimization_progress = min(1.0, (penthouse_threshold / max(1, taxable_income)))
-        st.markdown("**Optimization Progress:**")
-        st.progress(optimization_progress)
-        st.caption(f"{optimization_progress*100:.1f}% optimized - Need to reduce taxable income by ${penthouse_income:,.0f}")
-    else:
-        priority_1_status = "✅ Optimized"
-        priority_1_action = "No Penthouse exposure"
-        priority_1_impact = f"Maximum efficiency at {marginal_rate*100:.2f}% bracket"
-        priority_1_class = "priority-medium"
-        
-        st.markdown("**Optimization Progress:**")
-        st.progress(1.0)
-        st.caption("✅ 100% optimized - Below Penthouse threshold!")
-    
-    st.markdown(f'''
-        <div class="premium-card {priority_1_class}">
-            <h4>Priority 1: High-Rate Tax Shield</h4>
-            <p><strong>Status:</strong> {priority_1_status}</p>
-            <p><strong>Action:</strong> {priority_1_action}</p>
-            <p><strong>Impact:</strong> {priority_1_impact}</p>
-        </div>
-    ''', unsafe_allow_html=True)
-    
-    # Priority 2: TFSA Maximization
-    st.markdown(f'''
-        <div class="premium-card priority-medium">
-            <h4>Priority 2: Tax-Free Growth Acceleration</h4>
-            <p><strong>Status:</strong> ${remaining_tfsa_room:,.0f} TFSA room remaining</p>
-            <p><strong>Action:</strong> Maximize TFSA contributions for tax-free compounding</p>
-            <p><strong>Impact:</strong> All future gains grow tax-free forever</p>
-        </div>
-    ''', unsafe_allow_html=True)
-    
-    st.divider()
-    
-    # THE FEEDBACK LOOP - Tax Refund Reinvestment
-    st.markdown("### 🔄 The Feedback Loop: Refund Reinvestment")
-    
-    description_box(
-        "Strategic Refund Deployment",
-        f"Your RRSP contributions of ${total_rrsp_contributions:,.0f} will generate an estimated tax refund of ${estimated_refund:,.0f}. "
-        "Deploy this refund strategically into your TFSA to accelerate tax-free wealth growth."
-    )
-    
-    col_refund1, col_refund2, col_refund3 = st.columns(3)
-    
-    with col_refund1:
-        st.metric(
-            "Tax Refund Generated",
-            f"${estimated_refund:,.0f}",
-            help="Estimated refund from RRSP tax deductions"
-        )
-    
-    with col_refund2:
-        available_for_tfsa = min(estimated_refund, remaining_tfsa_room)
-        st.metric(
-            "Available for TFSA",
-            f"${available_for_tfsa:,.0f}",
-            help="Refund amount that fits in remaining TFSA room"
-        )
-    
-    with col_refund3:
-        reinvest_pct = (available_for_tfsa / max(1, estimated_refund)) * 100
-        st.metric(
-            "Reinvestment Rate",
-            f"{reinvest_pct:.1f}%",
-            help="Percentage of refund deployable to TFSA"
-        )
-    
-    # Refund deployment calculator
-    with st.expander("🧮 Refund Deployment Calculator", expanded=True):
-        st.markdown("**Strategic Question:** How much of your tax refund will you reinvest into your TFSA?")
-        
-        if estimated_refund > 0:
-            refund_to_deploy = st.slider(
-                "Amount to reinvest in TFSA",
-                0.0,
-                float(estimated_refund),
-                value=min(float(estimated_refund), float(remaining_tfsa_room)),
-                step=100.0
-            )
-            
-            st.caption(f"Selected amount: ${refund_to_deploy:,.0f}")
-            
-            col_deploy1, col_deploy2 = st.columns(2)
-            
-            with col_deploy1:
-                st.markdown("**Deployment Impact:**")
-                new_tfsa_total = tfsa_lump_sum + refund_to_deploy
-                new_tfsa_room = max(0, tfsa_room - new_tfsa_total)
-                
-                st.write(f"- Total TFSA contribution: ${new_tfsa_total:,.0f}")
-                st.write(f"- Remaining TFSA room: ${new_tfsa_room:,.0f}")
-                st.write(f"- Combined tax-advantaged savings: ${total_rrsp_contributions + new_tfsa_total:,.0f}")
-            
-            with col_deploy2:
-                st.markdown("**20-Year Growth Projection:**")
-                # Assuming 7% annual return
-                growth_rate = 0.07
-                years = 20
-                future_value = refund_to_deploy * ((1 + growth_rate) ** years)
-                tax_saved_at_withdrawal = future_value * marginal_rate
-                
-                st.write(f"- Refund deployed: ${refund_to_deploy:,.0f}")
-                st.write(f"- Future value @ 7%: ${future_value:,.0f}")
-                st.write(f"- Tax saved (vs. taxable): ${tax_saved_at_withdrawal:,.0f}")
-        else:
-            st.info("💡 Make RRSP contributions to generate a tax refund that can be reinvested into your TFSA for tax-free growth.")
-    
-    st.divider()
-    
-    # March 1st Deadline Dashboard
-    st.markdown(f"### 📅 March 1st Deadline Dashboard ({selected_year + 1})")
-    
-    col_deadline = st.columns([3, 1])
-    with col_deadline[1]:
-        components.html('''
-            <button onclick="window.print()" 
-                style="width: 100%; height: 60px; background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%); 
-                color: white; border: none; border-radius: 10px; font-weight: 600; 
-                cursor: pointer; box-shadow: 0 4px 6px rgba(59, 130, 246, 0.4);
-                transition: all 0.3s ease;">
-                📄 Save as PDF
-            </button>
-        ''', height=80)
-    
-    st.markdown(f"""
-        <div class="premium-card">
-            <h4>Critical Action Items Before March 1, {selected_year + 1}</h4>
-            <p style="color: #64748b; margin-bottom: 20px;">
-                These deposits must be completed to claim deductions for tax year {selected_year}
-            </p>
-        </div>
-    """, unsafe_allow_html=True)
-    
-    ac1, ac2, ac3, ac4, ac5 = st.columns(5)
-    
-    with ac1:
-        st.metric(
-            "RRSP Optimization",
-            f"${rrsp_lump_sum_optimization:,.0f}",
-            help="Strategic deposit for tax bracket optimization"
-        )
-    
-    with ac2:
-        st.metric(
-            "RRSP Additional",
-            f"${rrsp_lump_sum_additional:,.0f}",
-            help="Extra contributions for maximum refund"
-        )
-    
-    with ac3:
-        st.metric(
-            "TFSA Deposit",
-            f"${tfsa_lump_sum:,.0f}",
-            help="Tax-free savings contribution"
-        )
-    
-    with ac4:
-        st.metric(
-            "Expected Refund",
-            f"${estimated_refund:,.0f}",
-            delta=f"+{(estimated_refund/max(1,total_rrsp_contributions))*100:.1f}%",
-            help="Tax refund from all RRSP contributions"
-        )
-    
-    with ac5:
-        net_cashflow = estimated_refund - rrsp_lump_sum - tfsa_lump_sum
-        st.metric(
-            "Net Cashflow Impact",
-            f"${net_cashflow:,.0f}",
-            delta="Surplus" if net_cashflow >= 0 else "Investment",
-            delta_color="normal" if net_cashflow >= 0 else "inverse",
-            help="Refund minus deposits"
-        )
-    
-    st.divider()
-    
-    # Carryover Room Projection
-    st.markdown(f"### ⏭️ {selected_year + 1} Carryover Room Projection")
-    
-    description_box(
-        "Forward-Looking Planning",
-        f"Based on CRA's indexed limits and your {selected_year} contributions, "
-        "here's your projected contribution room for next year."
-    )
-    
-    # RRSP new room calculation (18% of income, max $31,560 for 2025)
-    rrsp_earned_room = min(31560, total_gross_income * 0.18)
-    projected_rrsp_room = remaining_rrsp_room + rrsp_earned_room
-    
-    # TFSA new room (indexed amount, $7,000 for 2025)
-    tfsa_earned_room = 7000
-    projected_tfsa_room = remaining_tfsa_room + tfsa_earned_room
-    
-    col_carry1, col_carry2 = st.columns(2)
-    
-    with col_carry1:
-        st.markdown("**RRSP Room Evolution**")
-        st.metric(
-            f"{selected_year + 1} Projected RRSP Room",
-            f"${projected_rrsp_room:,.0f}",
-            delta=f"+${rrsp_earned_room:,.0f} new",
-            help="Unused room + newly earned contribution room"
-        )
-        
-        st.progress(min(1.0, total_rrsp_contributions / max(1, rrsp_room)))
-        st.caption(f"You used {(total_rrsp_contributions/max(1,rrsp_room))*100:.1f}% of available RRSP room in {selected_year}")
-    
-    with col_carry2:
-        st.markdown("**TFSA Room Evolution**")
-        st.metric(
-            f"{selected_year + 1} Projected TFSA Room",
-            f"${projected_tfsa_room:,.0f}",
-            delta=f"+${tfsa_earned_room:,.0f} new",
-            help="Unused room + annual indexed increase"
-        )
-        
-        st.progress(min(1.0, tfsa_lump_sum / max(1, tfsa_room)))
-        st.caption(f"You used {(tfsa_lump_sum/max(1,tfsa_room))*100:.1f}% of available TFSA room in {selected_year}")
-    
-    st.divider()
-    
-    # Tax Bracket Reference
-    st.markdown("### 📑 Ontario Tax Bracket Reference (Combined Federal + Provincial)")
-    
-    with st.expander("📊 View Detailed Bracket Information", expanded=False):
-        description_box(
-            "2025/2026 Marginal Tax Rates",
-            "These are the combined federal and Ontario provincial marginal tax rates. "
-            "Your marginal rate is the tax you pay on each additional dollar earned."
-        )
-        
-        bracket_df = pd.DataFrame([
-            {
-                "Floor Level": bracket['name'],
-                "Income Range": f"${bracket['low']:,} - ${bracket['high']:,}" if bracket['high'] != float('inf') else f"${bracket['low']:,}+",
-                "Marginal Rate": f"{bracket['rate']*100:.2f}%",
-                "Tax on $1,000": f"${1000 * bracket['rate']:.2f}"
-            }
-            for bracket in TAX_BRACKETS
-        ])
-        
-        st.dataframe(
-            bracket_df,
-            use_container_width=True,
-            hide_index=True
-        )
-        
-        # Highlight current bracket
-        current_bracket = None
-        for bracket in TAX_BRACKETS:
-            if bracket['low'] <= taxable_income < bracket['high']:
-                current_bracket = bracket
-                break
-        
-        if current_bracket and taxable_income > 0:
-            st.info(f"📍 Your current marginal bracket: **{current_bracket['name']}** at **{current_bracket['rate']*100:.2f}%**")
-    
-    # Strategic Insights
-    st.divider()
-    st.markdown("### 💡 Strategic Insights & Recommendations")
-    
-    insights = []
-    
-    # Insight 1: Penthouse exposure
-    if penthouse_income > 0:
-        insights.append({
-            "icon": "⚠️",
-            "title": "High Priority: Penthouse Exposure",
-            "message": f"You have ${penthouse_income:,.0f} exposed to the Penthouse rate (47.97%). "
-                      f"Consider depositing an additional ${penthouse_shield_needed:,.0f} to your RRSP before March 1st "
-                      f"to save ${penthouse_income * 0.4797:,.0f} in taxes.",
-            "priority": "high"
-        })
-    
-    # Insight 2: Unused RRSP room
-    if remaining_rrsp_room > 10000:
-        insights.append({
-            "icon": "💰",
-            "title": "Opportunity: Unused RRSP Room",
-            "message": f"You have ${remaining_rrsp_room:,.0f} of unused RRSP room. "
-                      f"At your marginal rate of {marginal_rate*100:.2f}%, every additional $10,000 contributed "
-                      f"would generate a ${10000 * marginal_rate:,.0f} tax refund.",
-            "priority": "medium"
-        })
-    
-    # Insight 3: TFSA optimization
-    if remaining_tfsa_room > 5000:
-        insights.append({
-            "icon": "🌱",
-            "title": "Growth Opportunity: TFSA Capacity",
-            "message": f"You have ${remaining_tfsa_room:,.0f} of unused TFSA room. "
-                      f"Consider deploying your ${estimated_refund:,.0f} tax refund into this tax-free growth vehicle. "
-                      f"Over 20 years at 7% annual returns, this could grow to ${estimated_refund * (1.07**20):,.0f} tax-free.",
-            "priority": "medium"
-        })
-    
-    # Insight 4: Employer match
-    if employer_match > 0:
-        employer_contribution = base_salary * (employer_match / 100)
-        employee_contribution = base_salary * (biweekly_pct / 100)
-        
-        if employee_contribution > 0:
-            instant_return_pct = (employer_contribution / employee_contribution) * 100
-            insights.append({
-                "icon": "🎁",
-                "title": "Free Money: Employer Match",
-                "message": f"Your employer is contributing ${employer_contribution:,.0f} annually ({employer_match}% match). "
-                          f"This represents a **{instant_return_pct:.1f}% instant return** on your ${employee_contribution:,.0f} contribution. "
-                          f"Employer matching is the single best investment return available - always maximize it first.",
-                "priority": "high"
-            })
-        else:
-            insights.append({
-                "icon": "🎁",
-                "title": "Free Money: Employer Match Available",
-                "message": f"Your employer offers a {employer_match}% match (${employer_contribution:,.0f} potential free money). "
-                          f"You're currently not contributing, so you're leaving this free money on the table. "
-                          f"Start contributing to claim this benefit.",
-                "priority": "high"
-            })
-    
-    # Insight 5: Efficiency score
-    efficiency_score = (total_rrsp_contributions / max(1, rrsp_room)) * 0.5 + \
-                      (tfsa_lump_sum / max(1, tfsa_room)) * 0.5
-    
-    if efficiency_score < 0.5:
-        insights.append({
-            "icon": "📈",
-            "title": "Efficiency Opportunity",
-            "message": f"Your contribution room utilization is {efficiency_score*100:.1f}%. "
-                      f"You're leaving significant tax advantages on the table. "
-                      f"Consider increasing your automatic contributions or making larger lump-sum deposits.",
-            "priority": "medium"
-        })
-    elif efficiency_score > 0.8:
-        insights.append({
-            "icon": "✨",
-            "title": "Excellent Optimization",
-            "message": f"Your contribution room utilization is {efficiency_score*100:.1f}%. "
-                      f"You're making excellent use of your available tax-advantaged space. "
-                      f"Keep up this disciplined approach to wealth building!",
-            "priority": "high"
-        })
-    
-    # Display insights
-    for insight in insights:
-        priority_class = "priority-high" if insight['priority'] == "high" else "priority-medium"
-        st.markdown(f'''
-            <div class="premium-card {priority_class}">
-                <h4>{insight['icon']} {insight['title']}</h4>
-                <p style="line-height: 1.6;">{insight['message']}</p>
-            </div>
-        ''', unsafe_allow_html=True)
-    
-    if not insights:
-        st.success("✅ Your strategy is well-optimized! No critical action items identified.")
-
-# Footer
-st.divider()
-st.markdown("""
-    <div style="text-align: center; color: #64748b; padding: 20px;">
-        <p><strong>Canadian Tax & Wealth Velocity Suite</strong></p>
-        <p style="font-size: 0.9em;">
-            Tax rates are based on 2025/2026 Ontario combined federal + provincial brackets. 
-            Always consult with a qualified tax professional for personalized advice.
-        </p>
-        <p style="font-size: 0.85em; margin-top: 10px;">
-            RRSP contribution limit: 18% of previous year's income (max $31,560) | 
-            TFSA annual limit: $7,000
-        </p>
-    </div>
-""", unsafe_allow_html=True)
+    target_cagr
