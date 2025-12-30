@@ -624,6 +624,34 @@ else:
                 help="From CRA MyAccount"
             )
             
+            st.markdown("### 📈 Portfolio Tracking")
+            
+            rrsp_balance_start = st.number_input(
+                "RRSP Balance (Start of Year)",
+                value=float(year_data.get("rrsp_balance_start", 0)),
+                step=1000.0,
+                min_value=0.0,
+                help="Total RRSP portfolio value on January 1st (before any new contributions)"
+            )
+            
+            tfsa_balance_start = st.number_input(
+                "TFSA Balance (Start of Year)",
+                value=float(year_data.get("tfsa_balance_start", 0)),
+                step=1000.0,
+                min_value=0.0,
+                help="Total TFSA portfolio value on January 1st (before any new contributions)"
+            )
+            
+            target_cagr = st.slider(
+                "Target Annual Return (CAGR %)",
+                0.0, 15.0,
+                value=float(year_data.get("target_cagr", 7.0)),
+                step=0.5,
+                help="Expected compound annual growth rate for investments"
+            )
+            
+            st.caption(f"📊 Using {target_cagr}% CAGR for growth projections")
+            
             st.divider()
             
             # Form submit buttons
@@ -651,7 +679,10 @@ else:
                     "rrsp_lump_sum": rrsp_lump_sum,
                     "tfsa_lump_sum": tfsa_lump_sum,
                     "rrsp_room": rrsp_room,
-                    "tfsa_room": tfsa_room
+                    "tfsa_room": tfsa_room,
+                    "rrsp_balance_start": rrsp_balance_start,
+                    "tfsa_balance_start": tfsa_balance_start,
+                    "target_cagr": target_cagr
                 })
                 
                 if success:
@@ -671,6 +702,23 @@ else:
     total_rrsp_contributions = annual_rrsp_periodic + rrsp_lump_sum
     taxable_income = max(0, t4_gross_income - total_rrsp_contributions)
     
+    # Portfolio calculations
+    rrsp_balance_start = year_data.get("rrsp_balance_start", 0)
+    tfsa_balance_start = year_data.get("tfsa_balance_start", 0)
+    target_cagr = year_data.get("target_cagr", 7.0) / 100  # Convert to decimal
+    
+    # Calculate end of year balances (growth + new contributions)
+    # Assuming contributions happen throughout the year, use half-year growth on new money
+    rrsp_growth_existing = rrsp_balance_start * target_cagr
+    rrsp_growth_new_contrib = total_rrsp_contributions * (target_cagr / 2)  # Half year average
+    rrsp_balance_end = rrsp_balance_start + rrsp_growth_existing + total_rrsp_contributions + rrsp_growth_new_contrib
+    
+    tfsa_growth_existing = tfsa_balance_start * target_cagr
+    tfsa_growth_new_contrib = tfsa_lump_sum * (target_cagr / 2)
+    tfsa_balance_end = tfsa_balance_start + tfsa_growth_existing + tfsa_lump_sum + tfsa_growth_new_contrib
+    
+    total_portfolio_value = rrsp_balance_end + tfsa_balance_end
+    
     # Calculate tax refund
     estimated_refund = calculate_tax_refund(t4_gross_income, total_rrsp_contributions)
     marginal_rate = get_marginal_rate(t4_gross_income)
@@ -687,7 +735,7 @@ else:
     # Key Metrics Dashboard
     st.markdown("### 📊 Strategic Overview")
     
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3, col4, col5 = st.columns(5)
     
     with col1:
         st.metric(
@@ -719,6 +767,50 @@ else:
             delta=f"+{(estimated_refund/max(1,total_rrsp_contributions))*100:.1f}% ROI",
             help="Tax refund from RRSP contributions"
         )
+    
+    with col5:
+        st.metric(
+            "Total Portfolio Value",
+            f"${total_portfolio_value:,.0f}",
+            delta=f"+{target_cagr*100:.1f}% target",
+            help="Combined RRSP + TFSA projected end-of-year value"
+        )
+    
+    # Portfolio Growth Dashboard
+    if rrsp_balance_start > 0 or tfsa_balance_start > 0:
+        st.divider()
+        st.markdown("### 💼 Portfolio Growth Tracker")
+        
+        col_port1, col_port2, col_port3 = st.columns(3)
+        
+        with col_port1:
+            st.markdown("**RRSP Portfolio**")
+            st.metric("Start of Year", f"${rrsp_balance_start:,.0f}")
+            st.metric("New Contributions", f"${total_rrsp_contributions:,.0f}", delta="+")
+            st.metric("Investment Growth", f"${rrsp_growth_existing + rrsp_growth_new_contrib:,.0f}", delta=f"+{target_cagr*100:.1f}%")
+            st.metric("Projected End of Year", f"${rrsp_balance_end:,.0f}", 
+                     delta=f"+${rrsp_balance_end - rrsp_balance_start:,.0f}")
+        
+        with col_port2:
+            st.markdown("**TFSA Portfolio**")
+            st.metric("Start of Year", f"${tfsa_balance_start:,.0f}")
+            st.metric("New Contributions", f"${tfsa_lump_sum:,.0f}", delta="+")
+            st.metric("Investment Growth", f"${tfsa_growth_existing + tfsa_growth_new_contrib:,.0f}", delta=f"+{target_cagr*100:.1f}%")
+            st.metric("Projected End of Year", f"${tfsa_balance_end:,.0f}",
+                     delta=f"+${tfsa_balance_end - tfsa_balance_start:,.0f}")
+        
+        with col_port3:
+            st.markdown("**Combined Wealth**")
+            total_start = rrsp_balance_start + tfsa_balance_start
+            total_contributions = total_rrsp_contributions + tfsa_lump_sum
+            total_growth = (rrsp_growth_existing + rrsp_growth_new_contrib + 
+                          tfsa_growth_existing + tfsa_growth_new_contrib)
+            
+            st.metric("Start of Year", f"${total_start:,.0f}")
+            st.metric("Total Contributions", f"${total_contributions:,.0f}", delta="+")
+            st.metric("Total Growth", f"${total_growth:,.0f}", delta=f"+{target_cagr*100:.1f}%")
+            st.metric("Projected End of Year", f"${total_portfolio_value:,.0f}",
+                     delta=f"+${total_portfolio_value - total_start:,.0f}")
     
     st.divider()
     
