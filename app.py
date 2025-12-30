@@ -97,6 +97,8 @@ def is_year_optimized(year_data):
     
     # Calculate values
     t4_gross = year_data.get('t4_gross_income', 0)
+    other_inc = year_data.get('other_income', 0)
+    total_gross = t4_gross + other_inc
     base_salary = year_data.get('base_salary', 0)
     biweekly_pct = year_data.get('biweekly_pct', 0)
     employer_match = year_data.get('employer_match', 0)
@@ -106,7 +108,7 @@ def is_year_optimized(year_data):
     
     annual_rrsp_periodic = base_salary * ((biweekly_pct + employer_match) / 100)
     total_rrsp = annual_rrsp_periodic + rrsp_opt + rrsp_add + rrsp_legacy
-    taxable_income = max(0, t4_gross - total_rrsp)
+    taxable_income = max(0, total_gross - total_rrsp)
     
     # Optimized if no penthouse exposure (taxable income under $181,440)
     penthouse_threshold = 181440
@@ -283,6 +285,10 @@ if st.session_state.current_page == "Home":
         latest_data = all_history[latest_year]
         
         for yr, data in all_history.items():
+            t4_gross = data.get('t4_gross_income', 0)
+            other_inc = data.get('other_income', 0)
+            total_gross = t4_gross + other_inc
+            
             annual_rrsp = (data.get('base_salary', 0) * 
                           (data.get('biweekly_pct', 0) + data.get('employer_match', 0)) / 100) + \
                           data.get('rrsp_lump_sum_optimization', 0) + \
@@ -294,7 +300,7 @@ if st.session_state.current_page == "Home":
             total_tfsa_all += tfsa_contrib
             
             # Calculate tax shield value
-            refund = calculate_tax_refund(data.get('t4_gross_income', 0), annual_rrsp)
+            refund = calculate_tax_refund(total_gross, annual_rrsp)
             total_tax_shield += refund
         
         # Get projected balances from latest year
@@ -475,6 +481,7 @@ if st.session_state.current_page == "Home":
                 # Create empty year entry
                 save_year_data(new_year_input, {
                     "t4_gross_income": 0,
+                    "other_income": 0,
                     "base_salary": 0,
                     "biweekly_pct": 0,
                     "employer_match": 0,
@@ -569,13 +576,17 @@ if st.session_state.current_page == "Home":
         burndown_data = []
         
         for yr, data in sorted(all_history.items(), key=lambda x: x[0]):
+            t4_gross = data.get('t4_gross_income', 0)
+            other_inc = data.get('other_income', 0)
+            total_gross = t4_gross + other_inc
+            
             annual_rrsp = (data.get('base_salary', 0) * 
                           (data.get('biweekly_pct', 0) + data.get('employer_match', 0)) / 100) + \
                           data.get('rrsp_lump_sum_optimization', 0) + \
                           data.get('rrsp_lump_sum_additional', 0) + \
                           data.get('rrsp_lump_sum', 0)  # Legacy support
             tfsa_contrib = data.get('tfsa_lump_sum', 0)
-            gross = data.get('t4_gross_income', 0)
+            gross = total_gross
             
             rrsp_room_avail = data.get('rrsp_room', 0)
             tfsa_room_avail = data.get('tfsa_room', 0)
@@ -793,6 +804,14 @@ else:
                 help="Total employment income from Box 14 of your T4"
             )
             
+            other_income = st.number_input(
+                "Other Income",
+                value=float(year_data.get("other_income", 0)),
+                step=1000.0,
+                min_value=0.0,
+                help="Additional taxable income (e.g., rental property net income after expenses)"
+            )
+            
             base_salary = st.number_input(
                 "Annual Base Salary",
                 value=float(year_data.get("base_salary", 0)),
@@ -800,6 +819,8 @@ else:
                 min_value=0.0,
                 help="Core salary used for percentage-based contributions"
             )
+            
+            st.caption(f"💰 Total Gross Income: ${t4_gross_income + other_income:,.0f}")
             
             st.markdown("### 🎯 RRSP Strategy")
             
@@ -974,6 +995,7 @@ else:
             if submitted:
                 success = save_year_data(selected_year, {
                     "t4_gross_income": t4_gross_income,
+                    "other_income": other_income,
                     "base_salary": base_salary,
                     "biweekly_pct": biweekly_pct,
                     "employer_match": employer_match,
@@ -1000,10 +1022,13 @@ else:
             st.session_state.saved_flag = False
     
     # Main content area - Calculations
+    other_income = year_data.get("other_income", 0)
+    total_gross_income = t4_gross_income + other_income
+    
     annual_rrsp_periodic = base_salary * ((biweekly_pct + employer_match) / 100)
     rrsp_lump_sum = rrsp_lump_sum_optimization + rrsp_lump_sum_additional
     total_rrsp_contributions = annual_rrsp_periodic + rrsp_lump_sum
-    taxable_income = max(0, t4_gross_income - total_rrsp_contributions)
+    taxable_income = max(0, total_gross_income - total_rrsp_contributions)
     
     # Portfolio calculations
     rrsp_balance_start = year_data.get("rrsp_balance_start", 0)
@@ -1023,8 +1048,8 @@ else:
     total_portfolio_value = rrsp_balance_end + tfsa_balance_end
     
     # Calculate tax refund
-    estimated_refund = calculate_tax_refund(t4_gross_income, total_rrsp_contributions)
-    marginal_rate = get_marginal_rate(t4_gross_income)
+    estimated_refund = calculate_tax_refund(total_gross_income, total_rrsp_contributions)
+    marginal_rate = get_marginal_rate(total_gross_income)
     
     # Header
     st.title(f"🏛️ Tax Optimization Strategy: {selected_year}")
@@ -1038,13 +1063,17 @@ else:
     # Key Metrics Dashboard
     st.markdown("### 📊 Strategic Overview")
     
+    if other_income > 0:
+        st.info(f"💼 Income Breakdown: T4 ${t4_gross_income:,.0f} + Other ${other_income:,.0f} = Total ${total_gross_income:,.0f}")
+    
     col1, col2, col3, col4, col5 = st.columns(5)
     
     with col1:
         st.metric(
-            "Gross Income",
-            f"${t4_gross_income:,.0f}",
-            help="Total T4 employment income"
+            "Total Gross Income",
+            f"${total_gross_income:,.0f}",
+            delta=f"+${other_income:,.0f} other" if other_income > 0 else None,
+            help="T4 employment income plus other taxable income"
         )
     
     with col2:
@@ -1178,7 +1207,7 @@ else:
     
     for bracket in TAX_BRACKETS:
         # Total income in this bracket
-        total_in_bracket = min(t4_gross_income, bracket['high']) - bracket['low']
+        total_in_bracket = min(total_gross_income, bracket['high']) - bracket['low']
         
         if total_in_bracket <= 0:
             continue
@@ -1248,7 +1277,7 @@ else:
     
     penthouse_threshold = 181440
     penthouse_income = max(0, taxable_income - penthouse_threshold)
-    penthouse_shield_needed = max(0, t4_gross_income - penthouse_threshold - total_rrsp_contributions)
+    penthouse_shield_needed = max(0, total_gross_income - penthouse_threshold - total_rrsp_contributions)
     
     remaining_rrsp_room = max(0, rrsp_room - total_rrsp_contributions)
     remaining_tfsa_room = max(0, tfsa_room - tfsa_lump_sum)
@@ -1439,7 +1468,7 @@ else:
     )
     
     # RRSP new room calculation (18% of income, max $31,560 for 2025)
-    rrsp_earned_room = min(31560, t4_gross_income * 0.18)
+    rrsp_earned_room = min(31560, total_gross_income * 0.18)
     projected_rrsp_room = remaining_rrsp_room + rrsp_earned_room
     
     # TFSA new room (indexed amount, $7,000 for 2025)
