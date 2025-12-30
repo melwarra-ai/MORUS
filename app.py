@@ -337,6 +337,7 @@ if st.session_state.current_page == "Home":
         # Prepare data for charts
         chart_data = []
         room_data = []
+        burndown_data = []
         
         for yr, data in sorted(all_history.items(), key=lambda x: x[0]):
             annual_rrsp = (data.get('base_salary', 0) * 
@@ -344,6 +345,9 @@ if st.session_state.current_page == "Home":
                           data.get('rrsp_lump_sum', 0)
             tfsa_contrib = data.get('tfsa_lump_sum', 0)
             gross = data.get('t4_gross_income', 0)
+            
+            rrsp_room_avail = data.get('rrsp_room', 0)
+            tfsa_room_avail = data.get('tfsa_room', 0)
             
             chart_data.append({
                 "Year": yr,
@@ -357,16 +361,111 @@ if st.session_state.current_page == "Home":
             room_data.append({
                 "Year": yr,
                 "Account": "RRSP",
-                "Remaining Room": max(0, data.get('rrsp_room', 0) - annual_rrsp)
+                "Remaining Room": max(0, rrsp_room_avail - annual_rrsp)
             })
             room_data.append({
                 "Year": yr,
                 "Account": "TFSA",
-                "Remaining Room": max(0, data.get('tfsa_room', 0) - tfsa_contrib)
+                "Remaining Room": max(0, tfsa_room_avail - tfsa_contrib)
+            })
+            
+            # Burndown data - showing used vs available
+            burndown_data.append({
+                "Year": yr,
+                "Account": "RRSP",
+                "Status": "Used",
+                "Amount": annual_rrsp
+            })
+            burndown_data.append({
+                "Year": yr,
+                "Account": "RRSP",
+                "Status": "Available",
+                "Amount": max(0, rrsp_room_avail - annual_rrsp)
+            })
+            burndown_data.append({
+                "Year": yr,
+                "Account": "TFSA",
+                "Status": "Used",
+                "Amount": tfsa_contrib
+            })
+            burndown_data.append({
+                "Year": yr,
+                "Account": "TFSA",
+                "Status": "Available",
+                "Amount": max(0, tfsa_room_avail - tfsa_contrib)
             })
         
         df_chart = pd.DataFrame(chart_data)
         df_room = pd.DataFrame(room_data)
+        df_burndown = pd.DataFrame(burndown_data)
+        
+        # RRSP & TFSA Burndown Charts
+        st.markdown("**Contribution Room Burndown Analysis**")
+        st.caption("See how much room you're using vs. leaving unused each year")
+        
+        col_burn1, col_burn2 = st.columns(2)
+        
+        with col_burn1:
+            st.markdown("**RRSP Room Utilization**")
+            
+            rrsp_burndown = df_burndown[df_burndown['Account'] == 'RRSP']
+            
+            rrsp_chart = alt.Chart(rrsp_burndown).mark_bar().encode(
+                x=alt.X('Year:N', title='Year'),
+                y=alt.Y('Amount:Q', title='RRSP Room ($)', stack='zero'),
+                color=alt.Color('Status:N',
+                    scale=alt.Scale(
+                        domain=['Used', 'Available'],
+                        range=['#10b981', '#e2e8f0']
+                    ),
+                    legend=alt.Legend(title="Room Status")
+                ),
+                tooltip=[
+                    alt.Tooltip('Year:N', title='Year'),
+                    alt.Tooltip('Status:N', title='Status'),
+                    alt.Tooltip('Amount:Q', title='Amount', format='$,.0f')
+                ]
+            ).properties(height=320)
+            
+            st.altair_chart(rrsp_chart, use_container_width=True)
+            
+            # Calculate average utilization
+            total_used = rrsp_burndown[rrsp_burndown['Status'] == 'Used']['Amount'].sum()
+            total_available = rrsp_burndown['Amount'].sum()
+            utilization = (total_used / total_available * 100) if total_available > 0 else 0
+            st.metric("Avg RRSP Utilization", f"{utilization:.1f}%")
+        
+        with col_burn2:
+            st.markdown("**TFSA Room Utilization**")
+            
+            tfsa_burndown = df_burndown[df_burndown['Account'] == 'TFSA']
+            
+            tfsa_chart = alt.Chart(tfsa_burndown).mark_bar().encode(
+                x=alt.X('Year:N', title='Year'),
+                y=alt.Y('Amount:Q', title='TFSA Room ($)', stack='zero'),
+                color=alt.Color('Status:N',
+                    scale=alt.Scale(
+                        domain=['Used', 'Available'],
+                        range=['#3b82f6', '#e2e8f0']
+                    ),
+                    legend=alt.Legend(title="Room Status")
+                ),
+                tooltip=[
+                    alt.Tooltip('Year:N', title='Year'),
+                    alt.Tooltip('Status:N', title='Status'),
+                    alt.Tooltip('Amount:Q', title='Amount', format='$,.0f')
+                ]
+            ).properties(height=320)
+            
+            st.altair_chart(tfsa_chart, use_container_width=True)
+            
+            # Calculate average utilization
+            total_used = tfsa_burndown[tfsa_burndown['Status'] == 'Used']['Amount'].sum()
+            total_available = tfsa_burndown['Amount'].sum()
+            utilization = (total_used / total_available * 100) if total_available > 0 else 0
+            st.metric("Avg TFSA Utilization", f"{utilization:.1f}%")
+        
+        st.divider()
         
         col_left, col_right = st.columns(2)
         
@@ -395,7 +494,7 @@ if st.session_state.current_page == "Home":
             st.altair_chart(income_chart, use_container_width=True)
         
         with col_right:
-            st.markdown("**Contribution Room Burn-Down**")
+            st.markdown("**Remaining Room Trajectory**")
             
             room_chart = alt.Chart(df_room).mark_area(
                 opacity=0.7,
