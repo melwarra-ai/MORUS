@@ -1060,13 +1060,7 @@ if st.session_state.current_page == "Home":
     
     # Display insights
     for insight in insights:
-        if insight['priority'] == "high":
-            priority_class = "priority-high"
-        elif insight['priority'] == "success":
-            priority_class = "priority-success"
-        else:
-            priority_class = "priority-medium"
-        
+        priority_class = "priority-high" if insight['priority'] == "high" else "priority-medium"
         st.markdown(f'''
             <div class="premium-card {priority_class}">
                 <h4>{insight['icon']} {insight['title']}</h4>
