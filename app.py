@@ -1,147 +1,21 @@
 import streamlit as st
+import yfinance as yf
 import pandas as pd
-import altair as alt
+import numpy as np
+import plotly.graph_objects as go
+from datetime import datetime, date, timedelta
 import json
 import os
-import streamlit.components.v1 as components
 
-# --- 1. PERSISTENCE ENGINE ---
-SAVE_FILE = "retirement_history.json"
-
-def load_all_data():
-    """Load all saved year data from JSON file"""
-    if os.path.exists(SAVE_FILE):
-        try:
-            with open(SAVE_FILE, "r") as f:
-                return json.load(f)
-        except Exception as e:
-            st.error(f"Error loading data: {e}")
-            return {}
-    return {}
-
-def save_year_data(year, data):
-    """Save data for a specific year"""
-    all_data = load_all_data()
-    all_data[str(year)] = data
-    try:
-        with open(SAVE_FILE, "w") as f:
-            json.dump(all_data, f, indent=2)
-        return True
-    except Exception as e:
-        st.error(f"Error saving data: {e}")
-        return False
-
-def delete_year_data(year):
-    """Delete data for a specific year"""
-    all_data = load_all_data()
-    if str(year) in all_data:
-        del all_data[str(year)]
-        try:
-            with open(SAVE_FILE, "w") as f:
-                json.dump(all_data, f, indent=2)
-            return True
-        except Exception as e:
-            st.error(f"Error deleting data: {e}")
-            return False
-    return False
-
-# --- 2. TAX CALCULATION ENGINE ---
-TAX_BRACKETS = [
-    {"name": "Floor 1", "low": 0, "high": 53891, "rate": 0.2005},
-    {"name": "Floor 2", "low": 53891, "high": 58523, "rate": 0.2415},
-    {"name": "Floor 3", "low": 58523, "high": 94907, "rate": 0.2965},
-    {"name": "Floor 4", "low": 94907, "high": 117045, "rate": 0.3148},
-    {"name": "Floor 5", "low": 117045, "high": 181440, "rate": 0.3389},
-    {"name": "Penthouse", "low": 181440, "high": float('inf'), "rate": 0.4797}
-]
-
-def calculate_tax_on_income(income):
-    """Calculate total tax owed on given income using marginal brackets"""
-    if income <= 0:
-        return 0
-    
-    total_tax = 0
-    for bracket in TAX_BRACKETS:
-        if income > bracket['low']:
-            taxable_in_bracket = min(income, bracket['high']) - bracket['low']
-            total_tax += taxable_in_bracket * bracket['rate']
-    
-    return total_tax
-
-def calculate_tax_refund(gross_income, rrsp_contributions):
-    """Calculate tax refund from RRSP contributions"""
-    if gross_income <= 0:
-        return 0
-    
-    tax_without_rrsp = calculate_tax_on_income(gross_income)
-    tax_with_rrsp = calculate_tax_on_income(gross_income - rrsp_contributions)
-    refund = tax_without_rrsp - tax_with_rrsp
-    
-    return max(0, refund)
-
-def get_marginal_rate(income):
-    """Get the marginal tax rate for a given income level"""
-    if income <= 0:
-        return 0
-    
-    for bracket in TAX_BRACKETS:
-        if bracket['low'] <= income < bracket['high']:
-            return bracket['rate']
-    
-    return TAX_BRACKETS[-1]['rate']
-
-def calculate_annual_rrsp(data):
-    """
-    Calculate total annual RRSP contributions including employer match.
-    Employer matches 100% of employee contribution up to the employer_match cap.
-    """
-    base_salary = data.get('base_salary', 0)
-    biweekly_pct = data.get('biweekly_pct', 0)
-    employer_match_cap = data.get('employer_match', 0)  # This is the cap %
-    
-    # Employee contribution
-    employee_contrib = base_salary * (biweekly_pct / 100)
-    
-    # Employer matches up to the cap
-    employer_contrib = base_salary * (min(biweekly_pct, employer_match_cap) / 100)
-    
-    # Periodic contributions (from paychecks)
-    periodic_rrsp = employee_contrib + employer_contrib
-    
-    # Add lump sum contributions
-    lump_sum = data.get('rrsp_lump_sum_optimization', 0) + \
-                data.get('rrsp_lump_sum_additional', 0) + \
-                data.get('rrsp_lump_sum', 0)  # Legacy support
-    
-    return periodic_rrsp + lump_sum
-
-def is_year_optimized(year_data):
-    """Check if a year is optimized (minimizing penthouse exposure)"""
-    if not year_data:
-        return False
-    
-    # Calculate values
-    t4_gross = year_data.get('t4_gross_income', 0)
-    other_inc = year_data.get('other_income', 0)
-    total_gross = t4_gross + other_inc
-    
-    # Use helper function for RRSP calculation
-    total_rrsp = calculate_annual_rrsp(year_data)
-    taxable_income = max(0, total_gross - total_rrsp)
-    
-    # Optimized if no penthouse exposure (taxable income under $181,440)
-    penthouse_threshold = 181440
-    return taxable_income < penthouse_threshold
-
-# --- 3. CONFIGURATION & STYLING ---
+# ===== CONFIGURATION =====
 st.set_page_config(
-    page_title="Tax & Wealth Velocity Suite",
-    page_icon="🏦",
+    page_title="AlphaStream Wealth Master",
+    page_icon="🛡️",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Premium Fintech Styling
+# ===== PREMIUM STYLING =====
 st.markdown("""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
@@ -156,11 +30,16 @@ st.markdown("""
     
     .premium-card {
         background: white;
-        padding: 24px;
+        padding: 28px;
         border-radius: 16px;
         box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
-        margin-bottom: 20px;
+        margin-bottom: 24px;
         border: 1px solid #e2e8f0;
+        transition: all 0.3s ease;
+    }
+    
+    .premium-card:hover {
+        box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
     }
     
     .desc-box {
@@ -176,67 +55,160 @@ st.markdown("""
         margin-top: 0;
         color: white;
         font-weight: 600;
+        font-size: 1.2rem;
     }
     
-    .metric-card {
-        background: white;
-        padding: 20px;
-        border-radius: 12px;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.08);
-        text-align: center;
-        border-left: 4px solid #3b82f6;
-    }
-    
-    .year-tile {
+    .profile-tile {
         background: white;
         border-radius: 12px;
-        padding: 16px;
-        text-align: center;
+        padding: 24px;
         box-shadow: 0 2px 4px rgba(0,0,0,0.08);
         transition: all 0.3s ease;
         cursor: pointer;
         border: 2px solid transparent;
     }
     
-    .year-tile:hover {
+    .profile-tile:hover {
         box-shadow: 0 8px 16px rgba(0,0,0,0.12);
         transform: translateY(-2px);
         border-color: #3b82f6;
     }
     
-    .year-tile-saved {
+    .profile-tile-optimized {
         border-left: 4px solid #10b981;
+        background: linear-gradient(135deg, #dbeafe 0%, #bfdbfe 100%); /* Light blue background for optimized state */
     }
     
-    .year-tile-empty {
-        border-left: 4px solid #94a3b8;
+    .profile-tile-warning {
+        border-left: 4px solid #ef4444;
+        animation: pulse-border 2s infinite;
     }
     
-    .year-tile-progress {
-        border-left: 4px solid #f97316;
+    @keyframes pulse-border {
+        0%, 100% { border-left-color: #f59e0b; }
+        50% { border-left-color: #ef4444; }
     }
     
-    .status-saved {
-        color: #10b981;
+    .drift-badge {
+        display: inline-block;
+        background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+        color: white;
+        padding: 6px 14px;
+        border-radius: 20px;
+        font-size: 0.75rem;
+        font-weight: 700;
+        animation: pulse-badge 1.5s infinite; /* Blinking animation for rebalance required */
+        box-shadow: 0 4px 6px rgba(239, 68, 68, 0.4);
+    }
+    
+    @keyframes pulse-badge {
+        0%, 100% { 
+            opacity: 1; 
+            transform: scale(1);
+            box-shadow: 0 4px 6px rgba(239, 68, 68, 0.4);
+        }
+        50% { 
+            opacity: 0.7; 
+            transform: scale(1.05);
+            box-shadow: 0 6px 12px rgba(239, 68, 68, 0.6); /* Enhanced blink effect */
+        }
+    }
+    
+    .success-badge {
+        display: inline-block;
+        background: linear-gradient(135deg, #10b981 0%, #059669 100%); /* Green gradient for optimized state */
+        color: white;
+        padding: 6px 14px;
+        border-radius: 20px;
+        font-size: 0.75rem;
         font-weight: 600;
+        box-shadow: 0 2px 4px rgba(16, 185, 129, 0.3); /* Green shadow for emphasis */
+    }
+    
+    .metric-showcase {
+        background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+        color: white;
+        padding: 20px;
+        border-radius: 12px;
+        text-align: center;
+        box-shadow: 0 4px 6px rgba(59, 130, 246, 0.4);
+    }
+    
+    .metric-showcase h3 {
+        margin: 0;
+        font-size: 2rem;
+        font-weight: 700;
+    }
+    
+    .metric-showcase p {
+        margin: 8px 0 0 0;
+        font-size: 0.9rem;
+        opacity: 0.9;
+    }
+    
+    .stat-item {
+        background: white;
+        padding: 16px;
+        border-radius: 10px;
+        border: 1px solid #e2e8f0;
+        text-align: center;
+    }
+    
+    .stat-label {
+        font-size: 0.75rem;
+        color: #64748b;
+        text-transform: uppercase;
+        font-weight: 600;
+        letter-spacing: 0.5px;
+    }
+    
+    .stat-value {
+        font-size: 1.5rem;
+        font-weight: 700;
+        color: #1e293b;
         margin-top: 8px;
-        display: block;
-        animation: fadeIn 0.5s;
+        word-wrap: break-word; /* Prevent overflow */
     }
     
-    @keyframes fadeIn {
-        from { opacity: 0; }
-        to { opacity: 1; }
+    .allocation-blocked {
+        background: linear-gradient(135deg, #fee2e2 0%, #fecaca 100%);
+        border: 3px solid #ef4444;
+        padding: 20px;
+        border-radius: 12px;
+        margin: 16px 0;
+        text-align: center;
+        font-weight: 700;
+        color: #991b1b;
+        font-size: 1.1rem;
+        animation: shake 0.5s;
     }
     
-    .priority-high {
-        background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%);
-        border-left: 4px solid #f59e0b;
+    @keyframes shake {
+        0%, 100% { transform: translateX(0); }
+        25% { transform: translateX(-5px); }
+        75% { transform: translateX(5px); }
     }
     
-    .priority-medium {
+    .buying-guide {
         background: linear-gradient(135deg, #dbeafe 0%, #bfdbfe 100%);
         border-left: 4px solid #3b82f6;
+        padding: 12px 16px;
+        border-radius: 8px;
+        margin: 12px 0;
+        font-weight: 600;
+        color: #1e40af;
+        font-size: 0.9rem;
+        line-height: 1.5;
+    }
+    
+    .buying-guide-highlight {
+        background: #1e40af;
+        color: white;
+        padding: 2px 8px;
+        border-radius: 4px;
+        font-size: 1rem;
+        display: inline-block;
+        margin: 0 2px;
     }
     
     h1, h2, h3 {
@@ -244,21 +216,62 @@ st.markdown("""
         color: #1e293b;
     }
     
-    @media print {
-        div[data-testid="stSidebar"], 
-        .stButton, 
-        button:not(.print-button), 
-        header, 
-        footer, 
-        [data-testid="stToolbar"] {
-            display: none !important;
-        }
+    .stButton > button {
+        border-radius: 8px;
+        font-weight: 600;
+        transition: all 0.3s ease;
+        margin-bottom: 8px; /* Reduce gap between button and card */
+    }
+    
+    .stButton > button:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+    }
+    
+    .sidebar-section {
+        background: white;
+        padding: 20px;
+        border-radius: 12px;
+        margin-bottom: 20px;
+        border: 2px solid #e2e8f0;
     }
     </style>
 """, unsafe_allow_html=True)
 
+# ===== PERSISTENCE LAYER =====
+DB_FILE = "alphastream_wealth.json"
+
+def load_db():
+    base_schema = {"profiles": {}, "global_logs": []}
+    if os.path.exists(DB_FILE):
+        with open(DB_FILE, "r") as f:
+            try: 
+                data = json.load(f)
+                data.setdefault("profiles", {})
+                data.setdefault("global_logs", [])
+                for p in data["profiles"].values():
+                    p.setdefault("drift_tolerance", 5.0)
+                    p.setdefault("rebalance_stats", [])
+                    p.setdefault("last_rebalanced", None)
+                return data
+            except: 
+                return base_schema
+    return base_schema
+
+def save_db(data):
+    with open(DB_FILE, "w") as f:
+        json.dump(data, f, indent=2)
+
+def log_profile(prof, message):
+    prof.setdefault("rebalance_logs", [])
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+    prof["rebalance_logs"].insert(0, {
+        "date": timestamp, 
+        "event": str(message)
+    })
+    prof["rebalance_logs"] = prof["rebalance_logs"][:50]
+
 def description_box(title, content):
-    """Render a premium description box"""
     st.markdown(f'''
         <div class="desc-box">
             <h4>{title}</h4>
@@ -266,1737 +279,867 @@ def description_box(title, content):
         </div>
     ''', unsafe_allow_html=True)
 
-# --- 4. SESSION STATE INITIALIZATION ---
+# ===== SESSION STATE =====
+if "db" not in st.session_state:
+    st.session_state.db = load_db()
 if "current_page" not in st.session_state:
-    st.session_state.current_page = "Home"
-if "selected_year" not in st.session_state:
-    st.session_state.selected_year = 2025
-if "saved_flag" not in st.session_state:
-    st.session_state.saved_flag = False
-if "refund_to_tfsa" not in st.session_state:
-    st.session_state.refund_to_tfsa = 0
+    st.session_state.current_page = "Global Dashboard"
+if "active_profile" not in st.session_state:
+    st.session_state.active_profile = None
 
-# Load all historical data
-all_history = load_all_data()
-
-# --- 5. PAGE: HOME ---
-if st.session_state.current_page == "Home":
-    st.title("🏦 Canadian Tax & Wealth Velocity Suite")
+# ===== SIDEBAR =====
+with st.sidebar:
+    st.markdown("### 🛡️ AlphaStream")
+    st.caption("Wealth Management Suite v4.0")
     
-    description_box(
-        "Strategic Financial Command Center",
-        "Welcome to your comprehensive multi-year tax optimization platform. This suite helps you minimize taxes, "
-        "maximize RRSP/TFSA contributions, and track portfolio growth across time. "
-        "**How to use this dashboard:** (1) Review your global wealth summary to see current portfolio value, "
-        "(2) Check the portfolio growth chart to visualize your trajectory, "
-        "(3) Select a planning year below to optimize that specific tax year, "
-        "(4) Return here to see how your multi-year strategy is performing. "
-        "**Green years = optimized, Orange = needs work, Gray = not started.**"
+    st.divider()
+    
+    # Navigation
+    view_mode = st.radio(
+        "Navigation",
+        ["🏠 Global Dashboard", "📊 Portfolio Manager"],
+        key="nav_radio"
     )
     
-    # Global Net Worth Summary
-    if all_history:
-        st.markdown("### 💎 Global Wealth Summary")
-        
-        description_box(
-            "Portfolio Overview",
-            "Your complete financial snapshot showing current balances, lifetime contributions, and tax efficiency gains across all tracked years. "
-            "These values represent your projected end-of-year portfolio positions based on your target CAGR."
-        )
-        
-        total_rrsp_all = 0
-        total_tfsa_all = 0
-        total_tax_shield = 0
-        latest_rrsp_balance = 0
-        latest_tfsa_balance = 0
-        
-        # Get the latest year's ending balance
-        latest_year = max(all_history.keys(), key=lambda x: int(x))
-        latest_data = all_history[latest_year]
-        
-        for yr, data in all_history.items():
-            t4_gross = data.get('t4_gross_income', 0)
-            other_inc = data.get('other_income', 0)
-            total_gross = t4_gross + other_inc
+    st.divider()
+    
+    # Profile Creation
+    st.markdown("### ⚙️ Strategy Setup")
+    with st.expander("🆕 Create New Profile", expanded=False):
+        with st.form("new_profile_form"):
+            n_name = st.text_input("Profile Name", placeholder="e.g., Retirement USD")
+            n_curr = st.selectbox("Currency", ["USD", "CAD"])
+            n_p = st.number_input("Principal ($)", value=10000.0, step=1000.0, min_value=0.0)
+            n_goal = st.number_input("Annual Growth Goal (%)", value=10.0, step=0.5, min_value=0.0)
+            n_start = st.date_input("Inception Date", value=date.today() - timedelta(days=365))
             
-            annual_rrsp = (data.get('base_salary', 0) * 
-                          (data.get('biweekly_pct', 0) + data.get('employer_match', 0)) / 100) + \
-                          data.get('rrsp_lump_sum_optimization', 0) + \
-                          data.get('rrsp_lump_sum_additional', 0) + \
-                          data.get('rrsp_lump_sum', 0)  # Legacy support
-            tfsa_contrib = data.get('tfsa_lump_sum', 0)
+            submitted = st.form_submit_button("🚀 Initialize Profile", use_container_width=True)
             
-            total_rrsp_all += annual_rrsp
-            total_tfsa_all += tfsa_contrib
-            
-            # Calculate tax shield value
-            refund = calculate_tax_refund(total_gross, annual_rrsp)
-            total_tax_shield += refund
-        
-        # Get projected balances from latest year
-        if latest_data:
-            target_cagr = year_data.get("target_cagr", 7.0) / 100  # Convert to decimal
+            if submitted:
+                if n_name and n_name not in st.session_state.db["profiles"]:
+                    st.session_state.db["profiles"][n_name] = {
+                        "currency": n_curr,
+                        "principal": n_p,
+                        "yearly_goal_pct": n_goal,
+                        "start_date": str(n_start),
+                        "assets": {},
+                        "rebalance_logs": [],
+                        "drift_tolerance": 5.0,
+                        "rebalance_stats": [],
+                        "last_rebalanced": None
+                    }
+                    save_db(st.session_state.db)
+                    log_profile(st.session_state.db["profiles"][n_name], "Profile created")
+                    st.success(f"✅ Profile '{n_name}' created!")
+                    st.rerun()
+                elif not n_name:
+                    st.error("Please enter a profile name")
+                else:
+                    st.warning(f"Profile '{n_name}' already exists")
     
-    # Calculate end of year balances (growth + new contributions)
-    # Assuming contributions happen throughout the year, use half-year growth on new money
-    rrsp_growth_existing = rrsp_balance_start * target_cagr
-    rrsp_growth_new_contrib = total_rrsp_contributions * (target_cagr / 2)  # Half year average
-    rrsp_balance_end = rrsp_balance_start + rrsp_growth_existing + total_rrsp_contributions + rrsp_growth_new_contrib
-    
-    tfsa_growth_existing = tfsa_balance_start * target_cagr
-    tfsa_growth_new_contrib = tfsa_lump_sum * (target_cagr / 2)
-    tfsa_balance_end = tfsa_balance_start + tfsa_growth_existing + tfsa_lump_sum + tfsa_growth_new_contrib
-    
-    total_portfolio_value = rrsp_balance_end + tfsa_balance_end
-    
-    # Calculate tax refund
-    estimated_refund = calculate_tax_refund(total_gross_income, total_rrsp_contributions)
-    marginal_rate = get_marginal_rate(total_gross_income)
-    
-    # Optimization status
-    penthouse_threshold = 181440
-    is_optimized = taxable_income < penthouse_threshold
-    
-    # Header
-    st.title(f"🏛️ Tax Optimization Strategy: {selected_year}")
-    
-    # Status Card
-    col_status1, col_status2 = st.columns([3, 1])
-    
-    with col_status1:
-        description_box(
-            "Strategic Execution Framework",
-            f"Follow this comprehensive plan to maximize your tax efficiency and wealth velocity for {selected_year}. "
-            "Each section provides actionable insights to optimize your contribution strategy."
-        )
-    
-    # Portfolio Growth Dashboard
-    if rrsp_balance_start > 0 or tfsa_balance_start > 0 or annual_rrsp_periodic > 0:
+    # ===== ASSET ALLOCATION SECTION (IN SIDEBAR) =====
+    if view_mode == "📊 Portfolio Manager" and st.session_state.db["profiles"]:
         st.divider()
-        st.markdown("### 💼 Portfolio Growth Tracker")
+        st.markdown("### 🎯 Active Profile")
         
-        # Show RRSP contribution breakdown
-        if annual_rrsp_periodic > 0:
-            st.markdown("#### 🎯 RRSP Contribution Breakdown")
-            col_breakdown1, col_breakdown2, col_breakdown3 = st.columns(3)
+        profile_names = list(st.session_state.db["profiles"].keys())
+        
+        if st.session_state.active_profile and st.session_state.active_profile in profile_names:
+            default_index = profile_names.index(st.session_state.active_profile)
+        else:
+            default_index = 0
+        
+        selected = st.selectbox(
+            "Select Profile",
+            profile_names,
+            index=default_index,
+            key="profile_selector"
+        )
+        
+        if selected != st.session_state.active_profile:
+            st.session_state.active_profile = selected
+            st.rerun()
+        
+        # Get active profile
+        prof = st.session_state.db["profiles"][st.session_state.active_profile]
+        p_flag = "🇺🇸" if prof.get("currency") == "USD" else "🇨🇦"
+        
+        st.divider()
+        
+        # Drift Strategy Settings
+        st.markdown("### ⚙️ Drift Strategy")
+        st.caption("Set tolerance threshold for rebalance alerts")
+        new_tolerance = st.number_input(
+            "Drift Tolerance (%)",
+            value=float(prof.get('drift_tolerance', 5.0)),
+            min_value=0.5,
+            max_value=20.0,
+            step=0.5,
+            help="Alert when any asset drifts this much from target",
+            key="drift_tolerance_input"
+        )
+        if st.button("💾 Update Tolerance", use_container_width=True, key="update_tolerance"):
+            prof['drift_tolerance'] = new_tolerance
+            save_db(st.session_state.db)
+            log_profile(prof, f"Updated drift tolerance to {new_tolerance}%")
+            st.success("✅ Updated!")
+            st.rerun()
+        
+        st.divider()
+        
+        # ===== ASSET ALLOCATION - NOW IN SIDEBAR =====
+        st.markdown("### 🎯 Asset Allocation")
+        st.caption("Add assets to your portfolio and set target percentages")
+        st.markdown("**Add or Update Assets**")
+        
+        # Calculate current allocation
+        current_alloc = sum(a.get('target', 0) for a in prof.get("assets", {}).values())
+        
+        # Allocation progress bar with color coding
+        progress_color = "🟢" if current_alloc >= 100 else "🟠"
+        bar_color = "#10b981" if current_alloc >= 100 else "#f97316"
+        
+        st.markdown(f"""
+            <div style="margin: 12px 0;">
+                <div style="background: #e5e7eb; border-radius: 8px; height: 8px; overflow: hidden;">
+                    <div style="background: {bar_color}; height: 100%; width: {min(current_alloc, 100)}%; transition: all 0.3s;"></div>
+                </div>
+            </div>
+        """, unsafe_allow_html=True)
+        st.markdown(f"**{progress_color} Allocated: {current_alloc:.1f}% / 100%**")
+        
+        # Asset ticker input
+        a_sym = st.text_input(
+            "Ticker Symbol",
+            placeholder="e.g., AAPL, MSFT",
+            help="Enter stock ticker and press Enter",
+            key="ticker_input"
+        ).upper().strip()
+        
+        is_existing = a_sym in prof.get("assets", {})
+        
+        # Calculate available allocation space
+        if is_existing:
+            # If editing existing, exclude its current allocation
+            other_allocs = current_alloc - prof["assets"][a_sym].get("target", 0)
+        else:
+            other_allocs = current_alloc
+        
+        max_available = 100.0 - other_allocs
+        
+        # Check if new asset is blocked
+        block_new = (not is_existing) and (max_available <= 0) and (a_sym != "")
+        
+        # Show allocation block warning
+        if block_new:
+            st.markdown("""
+                <div class="allocation-blocked">
+                    🚫 PORTFOLIO AT 100%<br>
+                    Remove or reduce existing assets first!
+                </div>
+            """, unsafe_allow_html=True)
+        
+        valid_ticker = False
+        last_price = 1.0
+        ticker_name = ""
+        
+        # Validate ticker if entered and not blocked
+        if a_sym and not block_new:
+            try:
+                with st.spinner(f"🔍 Validating {a_sym}..."):
+                    t_check = yf.Ticker(a_sym)
+                    hist = t_check.history(period="1d")
+                    if not hist.empty:
+                        last_price = hist['Close'].iloc[-1]
+                        ticker_info = t_check.info
+                        ticker_name = ticker_info.get('longName', a_sym)
+                        st.success(f"✓ {ticker_name}")
+                        st.caption(f"**Current Price:** {p_flag} ${last_price:,.2f}")
+                        valid_ticker = True
+                    else:
+                        st.error(f"❌ No data found for {a_sym}")
+            except Exception as e:
+                if a_sym:
+                    st.error(f"❌ Invalid ticker: {a_sym}")
+        
+        # Asset allocation form (only if valid ticker)
+        if valid_ticker:
+            st.markdown("---")
             
-            with col_breakdown1:
-                st.metric(
-                    "Your Paycheck Contributions",
-                    f"${employee_rrsp_contribution:,.0f}",
-                    delta=f"{biweekly_pct:.1f}% of base salary",
-                    help="Amount deducted from your paychecks throughout the year"
-                )
+            # Get default values if editing
+            default_target = prof.get("assets", {}).get(a_sym, {}).get("target", 0.0)
+            default_units = prof.get("assets", {}).get(a_sym, {}).get("units", 0.0)
             
-            with col_breakdown2:
-                st.metric(
-                    "Employer Match",
-                    f"${employer_rrsp_contribution:,.0f}",
-                    delta=f"{min(biweekly_pct, employer_match_cap):.1f}% matched",
-                    help=f"Free money! Employer matches 100% up to {employer_match_cap:.1f}% cap"
-                )
-            
-            with col_breakdown3:
-                st.metric(
-                    "Total Periodic RRSP",
-                    f"${annual_rrsp_periodic:,.0f}",
-                    delta=f"${employer_rrsp_contribution:,.0f} is FREE",
-                    help="Combined employee + employer contributions from paychecks"
-                )
-            
-            st.divider()
-        
-        description_box(
-            "Year-End Portfolio Projection",
-            f"Based on {target_cagr*100:.1f}% annual return assumption. Growth calculated on existing balance (full year) and new contributions (half year average)."
-        )
-        
-        # Create portfolio table
-        portfolio_table_data = []
-        
-        # RRSP Row
-        portfolio_table_data.append({
-            "Account": "RRSP",
-            "Start Balance": f"${rrsp_balance_start:,.0f}",
-            "New Contributions": f"${total_rrsp_contributions:,.0f}",
-            "Investment Growth": f"${rrsp_growth_existing + rrsp_growth_new_contrib:,.0f}",
-            "End Balance": f"${rrsp_balance_end:,.0f}",
-            "Net Gain": f"${rrsp_balance_end - rrsp_balance_start:,.0f}"
-        })
-        
-        # TFSA Row
-        portfolio_table_data.append({
-            "Account": "TFSA",
-            "Start Balance": f"${tfsa_balance_start:,.0f}",
-            "New Contributions": f"${tfsa_lump_sum:,.0f}",
-            "Investment Growth": f"${tfsa_growth_existing + tfsa_growth_new_contrib:,.0f}",
-            "End Balance": f"${tfsa_balance_end:,.0f}",
-            "Net Gain": f"${tfsa_balance_end - tfsa_balance_start:,.0f}"
-        })
-        
-        # Total Row
-        total_start = rrsp_balance_start + tfsa_balance_start
-        total_contributions = total_rrsp_contributions + tfsa_lump_sum
-        total_growth = (rrsp_growth_existing + rrsp_growth_new_contrib + 
-                      tfsa_growth_existing + tfsa_growth_new_contrib)
-        
-        portfolio_table_data.append({
-            "Account": "**TOTAL**",
-            "Start Balance": f"**${total_start:,.0f}**",
-            "New Contributions": f"**${total_contributions:,.0f}**",
-            "Investment Growth": f"**${total_growth:,.0f}**",
-            "End Balance": f"**${total_portfolio_value:,.0f}**",
-            "Net Gain": f"**${total_portfolio_value - total_start:,.0f}**"
-        })
-        
-        df_portfolio = pd.DataFrame(portfolio_table_data)
-        
-        st.dataframe(
-            df_portfolio,
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "Account": st.column_config.TextColumn("Account", width="small"),
-                "Start Balance": st.column_config.TextColumn("Start of Year", width="medium"),
-                "New Contributions": st.column_config.TextColumn("Contributions", width="medium"),
-                "Investment Growth": st.column_config.TextColumn(f"Growth @ {target_cagr*100:.1f}%", width="medium"),
-                "End Balance": st.column_config.TextColumn("Projected End", width="medium"),
-                "Net Gain": st.column_config.TextColumn("Total Gain", width="medium")
-            }
-        )
-        
-        # Quick insights
-        col_insight1, col_insight2, col_insight3 = st.columns(3)
-        
-        with col_insight1:
-            growth_rate_actual = ((total_growth / max(1, total_start)) * 100) if total_start > 0 else 0
-            st.metric("Portfolio Growth Rate", f"{growth_rate_actual:.2f}%", 
-                     help="Actual growth rate on starting balance")
-        
-        with col_insight2:
-            contribution_impact = ((total_contributions / max(1, total_portfolio_value)) * 100)
-            st.metric("Contribution Impact", f"{contribution_impact:.1f}%",
-                     help="% of end value from new contributions")
-        
-        with col_insight3:
-            investment_impact = ((total_growth / max(1, total_portfolio_value)) * 100)
-            st.metric("Investment Impact", f"{investment_impact:.1f}%",
-                     help="% of end value from market growth")
-    
-    st.divider()
-    
-    # Tax Building Visualizer
-    st.markdown("### 🏢 Tax Building Visualizer")
-    
-    description_box(
-        "Income Distribution Across Tax Brackets",
-        "This chart shows how your income is distributed across tax floors. "
-        "Blue bars represent tax-shielded income (protected by RRSP), "
-        "while orange bars show taxable income. Your goal: maximize the blue."
-    )
-    
-    # Build the tax building data
-    building_data = []
-    
-    for bracket in TAX_BRACKETS:
-        # Total income in this bracket
-        total_in_bracket = min(total_gross_income, bracket['high']) - bracket['low']
-        
-        if total_in_bracket <= 0:
-            continue
-        
-        # Taxable amount in this bracket
-        taxed_amt = max(0, min(bracket['high'], taxable_income) - bracket['low'])
-        
-        # Shielded amount in this bracket
-        shielded_amt = total_in_bracket - taxed_amt
-        
-        if shielded_amt > 0:
-            building_data.append({
-                "Floor": bracket['name'],
-                "Amount": shielded_amt,
-                "Status": "Tax-Shielded",
-                "Rate": f"{bracket['rate']*100:.2f}%"
-            })
-        
-        if taxed_amt > 0:
-            building_data.append({
-                "Floor": bracket['name'],
-                "Amount": taxed_amt,
-                "Status": "Taxable",
-                "Rate": f"{bracket['rate']*100:.2f}%"
-            })
-    
-    if building_data:
-        df_building = pd.DataFrame(building_data)
-        
-        # Create ordered floor list for proper sorting
-        floor_order = [b['name'] for b in TAX_BRACKETS]
-        
-        building_chart = alt.Chart(df_building).mark_bar().encode(
-            x=alt.X('Floor:N',
-                title='Tax Bracket Floor',
-                sort=floor_order
-            ),
-            y=alt.Y('Amount:Q',
-                title='Income Amount ($)',
-                stack='zero'
-            ),
-            color=alt.Color('Status:N',
-                scale=alt.Scale(
-                    domain=['Tax-Shielded', 'Taxable'],
-                    range=['#3b82f6', '#f59e0b']
-                ),
-                legend=alt.Legend(title="Status", orient="top")
-            ),
-            tooltip=[
-                alt.Tooltip('Floor:N', title='Bracket'),
-                alt.Tooltip('Status:N', title='Status'),
-                alt.Tooltip('Amount:Q', title='Amount', format='$,.0f'),
-                alt.Tooltip('Rate:N', title='Tax Rate')
-            ]
-        ).properties(
-            height=400
-        )
-        
-        st.altair_chart(building_chart, use_container_width=True)
-    else:
-        st.info("Enter your income parameters in the sidebar to see the tax building visualization.")
-    
-    st.divider()
-    
-    # Strategic Prioritization
-    st.markdown("### 🎯 Strategic Prioritization Matrix")
-    
-    description_box(
-        "Optimization Roadmap",
-        f"**Goal**: Reduce taxable income below ${penthouse_threshold:,.0f} to avoid the Penthouse bracket (47.97% tax rate). "
-        f"Current status: {'✅ Optimized' if is_optimized else '⚠️ Needs Optimization'}"
-    )
-    
-    # Calculate optimization metrics
-    penthouse_income = max(0, taxable_income - penthouse_threshold)
-    penthouse_shield_needed = max(0, total_gross_income - penthouse_threshold - total_rrsp_contributions)
-    remaining_rrsp_room = max(0, rrsp_room - total_rrsp_contributions)
-    remaining_tfsa_room = max(0, tfsa_room - tfsa_lump_sum)
-    
-    # Priority 1: Penthouse Shield
-    if penthouse_income > 0:
-        priority_1_status = f"⚠️ ${penthouse_income:,.0f} in Penthouse"
-        priority_1_action = f"Increase RRSP by ${penthouse_shield_needed:,.0f}"
-        priority_1_impact = f"Save ${penthouse_income * 0.4797:,.0f} in taxes (47.97% rate)"
-        priority_1_class = "priority-high"
-        
-        # Show progress bar
-        optimization_progress = min(1.0, (penthouse_threshold / max(1, taxable_income)))
-        st.markdown("**Optimization Progress:**")
-        st.progress(optimization_progress)
-        st.caption(f"{optimization_progress*100:.1f}% optimized - Need to reduce taxable income by ${penthouse_income:,.0f}")
-    else:
-        priority_1_status = "✅ Optimized"
-        priority_1_action = "No Penthouse exposure"
-        priority_1_impact = f"Maximum efficiency at {marginal_rate*100:.2f}% bracket"
-        priority_1_class = "priority-medium"
-        
-        st.markdown("**Optimization Progress:**")
-        st.progress(1.0)
-        st.caption("✅ 100% optimized - Below Penthouse threshold!")
-    
-    st.markdown(f'''
-        <div class="premium-card {priority_1_class}">
-            <h4>Priority 1: High-Rate Tax Shield</h4>
-            <p><strong>Status:</strong> {priority_1_status}</p>
-            <p><strong>Action:</strong> {priority_1_action}</p>
-            <p><strong>Impact:</strong> {priority_1_impact}</p>
-        </div>
-    ''', unsafe_allow_html=True)
-    
-    # Priority 2: TFSA Maximization
-    st.markdown(f'''
-        <div class="premium-card priority-medium">
-            <h4>Priority 2: Tax-Free Growth Acceleration</h4>
-            <p><strong>Status:</strong> ${remaining_tfsa_room:,.0f} TFSA room remaining</p>
-            <p><strong>Action:</strong> Maximize TFSA contributions for tax-free compounding</p>
-            <p><strong>Impact:</strong> All future gains grow tax-free forever</p>
-        </div>
-    ''', unsafe_allow_html=True)
-    
-    st.divider()
-    
-    # THE FEEDBACK LOOP - Tax Refund Reinvestment
-    st.markdown("### 🔄 The Feedback Loop: Refund Reinvestment")
-    
-    description_box(
-        "Strategic Refund Deployment",
-        f"Your RRSP contributions of ${total_rrsp_contributions:,.0f} will generate an estimated tax refund of ${estimated_refund:,.0f}. "
-        "Deploy this refund strategically into your TFSA to accelerate tax-free wealth growth."
-    )
-    
-    col_refund1, col_refund2, col_refund3 = st.columns(3)
-    
-    with col_refund1:
-        st.metric(
-            "Tax Refund Generated",
-            f"${estimated_refund:,.0f}",
-            help="Estimated refund from RRSP tax deductions"
-        )
-    
-    with col_refund2:
-        available_for_tfsa = min(estimated_refund, remaining_tfsa_room)
-        st.metric(
-            "Available for TFSA",
-            f"${available_for_tfsa:,.0f}",
-            help="Refund amount that fits in remaining TFSA room"
-        )
-    
-    with col_refund3:
-        reinvest_pct = (available_for_tfsa / max(1, estimated_refund)) * 100
-        st.metric(
-            "Reinvestment Rate",
-            f"{reinvest_pct:.1f}%",
-            help="Percentage of refund deployable to TFSA"
-        )
-    
-    # Refund deployment calculator
-    with st.expander("🧮 Refund Deployment Calculator", expanded=True):
-        st.markdown("**Strategic Question:** How much of your tax refund will you reinvest into your TFSA?")
-        
-        if estimated_refund > 0:
-            refund_to_deploy = st.slider(
-                "Amount to reinvest in TFSA",
-                0.0,
-                float(estimated_refund),
-                value=min(float(estimated_refund), float(remaining_tfsa_room)),
-                step=100.0
+            # Target percentage with STRICT maximum enforcement
+            a_w = st.number_input(
+                f"Target Allocation %",
+                min_value=0.0,
+                max_value=max_available,
+                value=min(float(default_target), max_available),
+                step=0.5,
+                help=f"Maximum available: {max_available:.1f}%",
+                key="target_weight"
             )
             
-            st.caption(f"Selected amount: ${refund_to_deploy:,.0f}")
-            
-            col_deploy1, col_deploy2 = st.columns(2)
-            
-            with col_deploy1:
-                st.markdown("**Deployment Impact:**")
-                new_tfsa_total = tfsa_lump_sum + refund_to_deploy
-                new_tfsa_room = max(0, tfsa_room - new_tfsa_total)
+            # BUYING GUIDE - Shows immediately when target > 0
+            if a_w > 0:
+                target_value = (a_w / 100) * prof['principal']
+                suggested_units = target_value / last_price
                 
-                st.write(f"- Total TFSA contribution: ${new_tfsa_total:,.0f}")
-                st.write(f"- Remaining TFSA room: ${new_tfsa_room:,.0f}")
-                st.write(f"- Combined tax-advantaged savings: ${total_rrsp_contributions + new_tfsa_total:,.0f}")
+                st.markdown(f"""
+                    <div class="buying-guide">
+                        💡 <strong>Buy Guide:</strong> To reach {a_w}% → Buy <span class="buying-guide-highlight">{suggested_units:.4f} units</span> (${target_value:,.0f} @ ${last_price:,.2f}/unit)
+                    </div>
+                """, unsafe_allow_html=True)
             
-            with col_deploy2:
-                st.markdown("**20-Year Growth Projection:**")
-                # Assuming 7% annual return
-                growth_rate = 0.07
-                years = 20
-                future_value = refund_to_deploy * ((1 + growth_rate) ** years)
-                tax_saved_at_withdrawal = future_value * marginal_rate
-                
-                st.write(f"- Refund deployed: ${refund_to_deploy:,.0f}")
-                st.write(f"- Future value @ 7%: ${future_value:,.0f}")
-                st.write(f"- Tax saved (vs. taxable): ${tax_saved_at_withdrawal:,.0f}")
-        else:
-            st.info("💡 Make RRSP contributions to generate a tax refund that can be reinvested into your TFSA for tax-free growth.")
-    
-    st.divider()
-    
-    # March 1st Deadline Dashboard
-    st.markdown(f"### 📅 March 1st Deadline Dashboard ({selected_year + 1})")
-    
-    col_deadline = st.columns([3, 1])
-    with col_deadline[1]:
-        components.html('''
-            <button onclick="window.print()" 
-                style="width: 100%; height: 60px; background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%); 
-                color: white; border: none; border-radius: 10px; font-weight: 600; 
-                cursor: pointer; box-shadow: 0 4px 6px rgba(59, 130, 246, 0.4);
-                transition: all 0.3s ease;">
-                📄 Save as PDF
-            </button>
-        ''', height=80)
-    
-    st.markdown(f"""
-        <div class="premium-card">
-            <h4>Critical Action Items Before March 1, {selected_year + 1}</h4>
-            <p style="color: #64748b; margin-bottom: 20px;">
-                These deposits must be completed to claim deductions for tax year {selected_year}
-            </p>
-        </div>
-    """, unsafe_allow_html=True)
-    
-    ac1, ac2, ac3, ac4, ac5 = st.columns(5)
-    
-    with ac1:
-        st.metric(
-            "RRSP Optimization",
-            f"${rrsp_lump_sum_optimization:,.0f}",
-            help="Strategic deposit for tax bracket optimization"
-        )
-    
-    with ac2:
-        st.metric(
-            "RRSP Additional",
-            f"${rrsp_lump_sum_additional:,.0f}",
-            help="Extra contributions for maximum refund"
-        )
-    
-    with ac3:
-        st.metric(
-            "TFSA Deposit",
-            f"${tfsa_lump_sum:,.0f}",
-            help="Tax-free savings contribution"
-        )
-    
-    with ac4:
-        st.metric(
-            "Expected Refund",
-            f"${estimated_refund:,.0f}",
-            delta=f"+{(estimated_refund/max(1,total_rrsp_contributions))*100:.1f}%",
-            help="Tax refund from all RRSP contributions"
-        )
-    
-    with ac5:
-        net_cashflow = estimated_refund - rrsp_lump_sum - tfsa_lump_sum
-        st.metric(
-            "Net Cashflow Impact",
-            f"${net_cashflow:,.0f}",
-            delta="Surplus" if net_cashflow >= 0 else "Investment",
-            delta_color="normal" if net_cashflow >= 0 else "inverse",
-            help="Refund minus deposits"
-        )
-    
-    st.divider()
-    
-    # Carryover Room Projection
-    st.markdown(f"### ⏭️ {selected_year + 1} Carryover Room Projection")
+            # Units owned input
+            a_u = st.number_input(
+                "Units Currently Owned",
+                min_value=0.0,
+                value=float(default_units),
+                step=0.0001,
+                format="%.4f",
+                help="How many shares do you own?",
+                key="units_owned"
+            )
+            
+            st.markdown("---")
+            
+            # Action buttons
+            col_b1, col_b2 = st.columns(2)
+            
+            with col_b1:
+                save_disabled = (a_w <= 0) or (a_w > max_available)
+                if st.button("💾 Save Asset", use_container_width=True, type="primary", key="save_asset", disabled=save_disabled):
+                    prof.setdefault("assets", {})[a_sym] = {"units": a_u, "target": a_w}
+                    action = "Updated" if is_existing else "Added"
+                    log_profile(prof, f"{action} {a_sym}: {a_w}% target, {a_u:.4f} units")
+                    save_db(st.session_state.db)
+                    st.success(f"✅ {action} {a_sym}!")
+                    st.rerun()
+            
+            with col_b2:
+                if is_existing:
+                    if st.button("🗑️ Remove", use_container_width=True, key="remove_asset"):
+                        del prof["assets"][a_sym]
+                        log_profile(prof, f"Removed {a_sym} from portfolio")
+                        save_db(st.session_state.db)
+                        st.success(f"✅ Removed {a_sym}!")
+                        st.rerun()
+        
+        # Show existing assets
+        if prof.get("assets"):
+            st.divider()
+            st.markdown("### 📋 Current Assets")
+            for ticker, data in prof["assets"].items():
+                st.caption(f"**{ticker}**: {data['target']}% ({data['units']:.4f} units)")
+        
+        # Activity Log in Sidebar
+        st.divider()
+        st.markdown("### 📜 Activity Log")
+        st.caption("Track all portfolio changes and updates")
+        with st.expander("View Recent Activity", expanded=False):
+            all_logs = prof.get("rebalance_logs", [])
+            logs_to_show = all_logs[:20]
+            if logs_to_show:
+                for log_entry in logs_to_show:
+                    st.caption(f"**{log_entry['date']}**: {log_entry['event']}")
+                if len(all_logs) > 20:
+                    st.caption(f"... and {len(all_logs) - 20} more entries")
+            else:
+                st.caption("No activity yet")
+
+# ===== MAIN CONTENT =====
+if view_mode == "🏠 Global Dashboard":
+    st.title("🏠 Global Portfolio Dashboard")
     
     description_box(
-        "Forward-Looking Planning",
-        f"Based on CRA's indexed limits and your {selected_year} contributions, "
-        "here's your projected contribution room for next year."
+        "Portfolio Command Center",
+        "Monitor all your investment strategies at a glance. Track performance, detect drift, and manage multiple portfolios with institutional-grade precision."
     )
     
-    # RRSP new room calculation (18% of income, max $31,560 for 2025)
-    rrsp_earned_room = min(31560, total_gross_income * 0.18)
-    projected_rrsp_room = remaining_rrsp_room + rrsp_earned_room
+    profiles = st.session_state.db.get("profiles", {})
     
-    # TFSA new room (indexed amount, $7,000 for 2025)
-    tfsa_earned_room = 7000
-    projected_tfsa_room = remaining_tfsa_room + tfsa_earned_room
-    
-    col_carry1, col_carry2 = st.columns(2)
-    
-    with col_carry1:
-        st.markdown("**RRSP Room Evolution**")
-        st.metric(
-            f"{selected_year + 1} Projected RRSP Room",
-            f"${projected_rrsp_room:,.0f}",
-            delta=f"+${rrsp_earned_room:,.0f} new",
-            help="Unused room + newly earned contribution room"
-        )
+    if not profiles:
+        st.info("👋 Welcome to AlphaStream! Create your first investment profile using the sidebar.")
         
-        st.progress(min(1.0, total_rrsp_contributions / max(1, rrsp_room)))
-        st.caption(f"You used {(total_rrsp_contributions/max(1,rrsp_room))*100:.1f}% of available RRSP room in {selected_year}")
-    
-    with col_carry2:
-        st.markdown("**TFSA Room Evolution**")
-        st.metric(
-            f"{selected_year + 1} Projected TFSA Room",
-            f"${projected_tfsa_room:,.0f}",
-            delta=f"+${tfsa_earned_room:,.0f} new",
-            help="Unused room + annual indexed increase"
-        )
+        st.markdown("### 🎯 Key Features")
         
-        st.progress(min(1.0, tfsa_lump_sum / max(1, tfsa_room)))
-        st.caption(f"You used {(tfsa_lump_sum/max(1,tfsa_room))*100:.1f}% of available TFSA room in {selected_year}")
-    
-    st.divider()
-    
-    # Tax Bracket Reference
-    st.markdown("### 📑 Ontario Tax Bracket Reference (Combined Federal + Provincial)")
-    
-    with st.expander("📊 View Detailed Bracket Information", expanded=False):
-        description_box(
-            "2025/2026 Marginal Tax Rates",
-            "These are the combined federal and Ontario provincial marginal tax rates. "
-            "Your marginal rate is the tax you pay on each additional dollar earned."
-        )
+        col1, col2, col3 = st.columns(3)
         
-        bracket_df = pd.DataFrame([
-            {
-                "Floor Level": bracket['name'],
-                "Income Range": f"${bracket['low']:,} - ${bracket['high']:,}" if bracket['high'] != float('inf') else f"${bracket['low']:,}+",
-                "Marginal Rate": f"{bracket['rate']*100:.2f}%",
-                "Tax on $1,000": f"${1000 * bracket['rate']:.2f}"
-            }
-            for bracket in TAX_BRACKETS
-        ])
+        with col1:
+            st.markdown("""
+                <div class="premium-card">
+                    <h4>🎯 Drift Detection</h4>
+                    <p style="color: #64748b;">
+                        Automatic alerts when assets deviate from target allocation. Stay disciplined with your strategy.
+                    </p>
+                </div>
+            """, unsafe_allow_html=True)
         
-        st.dataframe(
-            bracket_df,
-            use_container_width=True,
-            hide_index=True
-        )
+        with col2:
+            st.markdown("""
+                <div class="premium-card">
+                    <h4>📈 Performance Tracking</h4>
+                    <p style="color: #64748b;">
+                        Real-time portfolio valuation vs. your target growth path. See if you're on track.
+                    </p>
+                </div>
+            """, unsafe_allow_html=True)
         
-        # Highlight current bracket
-        current_bracket = None
-        for bracket in TAX_BRACKETS:
-            if bracket['low'] <= taxable_income < bracket['high']:
-                current_bracket = bracket
-                break
+        with col3:
+            st.markdown("""
+                <div class="premium-card">
+                    <h4>⚖️ Smart Rebalancing</h4>
+                    <p style="color: #64748b;">
+                        Automated calculations show exactly what to buy or sell to restore balance.
+                    </p>
+                </div>
+            """, unsafe_allow_html=True)
         
-        if current_bracket and taxable_income > 0:
-            st.info(f"📍 Your current marginal bracket: **{current_bracket['name']}** at **{current_bracket['rate']*100:.2f}%**")
-    
-    # Strategic Insights
-    st.divider()
-    st.markdown("### 💡 Strategic Insights & Recommendations")
-    
-    insights = []
-    
-    # Insight 1: Penthouse exposure
-    if penthouse_income > 0:
-        insights.append({
-            "icon": "⚠️",
-            "title": "High Priority: Penthouse Exposure",
-            "message": f"You have ${penthouse_income:,.0f} exposed to the Penthouse rate (47.97%). "
-                      f"Consider depositing an additional ${penthouse_shield_needed:,.0f} to your RRSP before March 1st "
-                      f"to save ${penthouse_income * 0.4797:,.0f} in taxes.",
-            "priority": "high"
-        })
-    
-    # Insight 2: Unused RRSP room
-    if remaining_rrsp_room > 10000:
-        insights.append({
-            "icon": "💰",
-            "title": "Opportunity: Unused RRSP Room",
-            "message": f"You have ${remaining_rrsp_room:,.0f} of unused RRSP room. "
-                      f"At your marginal rate of {marginal_rate*100:.2f}%, every additional $10,000 contributed "
-                      f"would generate a ${10000 * marginal_rate:,.0f} tax refund.",
-            "priority": "medium"
-        })
-    
-    # Insight 3: TFSA optimization
-    if remaining_tfsa_room > 5000:
-        insights.append({
-            "icon": "🌱",
-            "title": "Growth Opportunity: TFSA Capacity",
-            "message": f"You have ${remaining_tfsa_room:,.0f} of unused TFSA room. "
-                      f"Consider deploying your ${estimated_refund:,.0f} tax refund into this tax-free growth vehicle. "
-                      f"Over 20 years at 7% annual returns, this could grow to ${estimated_refund * (1.07**20):,.0f} tax-free.",
-            "priority": "medium"
-        })
-    
-    # Insight 4: Employer match
-    if employer_match_cap > 0:
-        employer_contribution = base_salary * (min(biweekly_pct, employer_match_cap) / 100)
-        employee_contribution = base_salary * (biweekly_pct / 100)
+    else:
+        # Fetch all prices once
+        all_tickers = set()
+        for p in profiles.values():
+            all_tickers.update(p.get("assets", {}).keys())
         
-        if employee_contribution > 0:
-            if biweekly_pct >= employer_match_cap:
-                # Maximizing match
-                insights.append({
-                    "icon": "🎁",
-                    "title": "Excellent: Maximizing Employer Match",
-                    "message": f"You're contributing {biweekly_pct:.1f}% (${employee_contribution:,.0f}) and your employer is matching "
-                              f"{employer_match_cap:.1f}% (${employer_contribution:,.0f}). You're getting the full match! "
-                              f"This is ${employer_contribution:,.0f} of free money every year. Keep it up!",
-                    "priority": "high"
-                })
+        prices = {}
+        if all_tickers:
+            try:
+                with st.spinner("📊 Fetching market data..."):
+                    raw_px = yf.download(list(all_tickers), period="1d", progress=False)['Close']
+                    if len(all_tickers) == 1:
+                        prices = {list(all_tickers)[0]: float(raw_px.iloc[-1])}
+                    else:
+                        prices = {k: float(v) for k, v in raw_px.iloc[-1].to_dict().items()}
+            except Exception as e:
+                st.warning(f"⚠️ Could not fetch prices: {str(e)}")
+        
+        # Summary Metrics
+        total_value = 0
+        total_drift_count = 0
+        
+        for p_data in profiles.values():
+            p_assets = p_data.get("assets", {})
+            curr_v = float(sum(p_assets[t]["units"] * prices.get(t, 0) for t in p_assets))
+            total_value += curr_v
+            
+            # Check if rebalance required
+            has_rebalanced = p_data.get("last_rebalanced") is not None
+            has_assets = len(p_assets) > 0
+            
+            # Count as needing rebalance if: (1) never rebalanced with assets OR (2) has drift after rebalancing
+            if not has_rebalanced and has_assets:
+                # Never rebalanced but has assets - needs rebalance
+                total_drift_count += 1
+            elif has_rebalanced and curr_v > 0:
+                # Check for actual drift only if previously rebalanced
+                for t in p_assets:
+                    actual_pct = float((p_assets[t]["units"] * prices.get(t, 0) / curr_v * 100))
+                    target_pct = float(p_assets[t]["target"])
+                    if abs(actual_pct - target_pct) >= p_data.get("drift_tolerance", 5.0):
+                        total_drift_count += 1
+                        break
+        
+        # Top Metrics
+        col_m1, col_m2, col_m3 = st.columns(3)
+        
+        with col_m1:
+            st.markdown(f"""
+                <div class="metric-showcase">
+                    <h3>${total_value:,.0f}</h3>
+                    <p>Total Portfolio Value</p>
+                </div>
+            """, unsafe_allow_html=True)
+        
+        with col_m2:
+            st.markdown(f"""
+                <div class="metric-showcase" style="background: linear-gradient(135deg, #10b981 0%, #059669 100%);">
+                    <h3>{len(profiles)}</h3>
+                    <p>Active Strategies</p>
+                </div>
+            """, unsafe_allow_html=True)
+        
+        with col_m3:
+            alert_color = "#ef4444" if total_drift_count > 0 else "#10b981"
+            alert_text = f"⚠️ {total_drift_count} Need Rebalancing" if total_drift_count > 0 else f"{total_drift_count} Need Rebalancing"
+            st.markdown(f"""
+                <div class="metric-showcase" style="background: linear-gradient(135deg, {alert_color} 0%, {alert_color} 100%);">
+                    <h3>{total_drift_count}</h3>
+                    <p>{alert_text}</p>
+                </div>
+            """, unsafe_allow_html=True)
+        
+        st.divider()
+        
+        # Portfolio Grid
+        st.markdown("### 📁 Portfolio Strategies")
+        st.caption("Click any profile name to view detailed analytics and manage assets")
+        
+        cols = st.columns(2)
+        for i, (name, p_data) in enumerate(profiles.items()):
+            p_assets = p_data.get("assets", {})
+            curr_v = float(sum(p_assets[t]["units"] * prices.get(t, 0) for t in p_assets))
+            
+            # Check if profile has been rebalanced
+            has_rebalanced = p_data.get("last_rebalanced") is not None
+            
+            # Check for drift
+            has_drift = False
+            drift_details = []
+            if curr_v > 0 and has_rebalanced:
+                for t in p_assets:
+                    actual_pct = float((p_assets[t]["units"] * prices.get(t, 0) / curr_v * 100))
+                    target_pct = float(p_assets[t]["target"])
+                    drift = abs(actual_pct - target_pct)
+                    if drift >= p_data.get("drift_tolerance", 5.0):
+                        has_drift = True
+                        drift_details.append(f"{t}: {drift:.1f}% drift")
+            
+            # Calculate ROI and CAGR
+            start_val = float(p_data.get('principal', 0))
+            roi_pct = ((curr_v / start_val) - 1) * 100 if start_val > 0 else 0
+            
+            # Calculate CAGR (Compound Annual Growth Rate)
+            start_date = datetime.strptime(p_data.get('start_date', str(date.today())), '%Y-%m-%d')
+            years_elapsed = max((date.today() - start_date.date()).days / 365.25, 0.01)
+            cagr = ((curr_v / start_val) ** (1 / years_elapsed) - 1) * 100 if start_val > 0 and years_elapsed > 0 else 0
+            
+            p_flag = "🇺🇸" if p_data.get("currency") == "USD" else "🇨🇦"
+            
+            # Determine status - show rebalance required if never rebalanced with assets OR has drift
+            if not has_rebalanced and len(p_assets) > 0:
+                # Profile has assets but never rebalanced - show blinking rebalance required
+                tile_class = "profile-tile-warning"
+                status_badge = '<span class="drift-badge">🚨 REBALANCE REQUIRED</span>'
+            elif not has_rebalanced:
+                # Profile has no assets yet
+                tile_class = "profile-tile"
+                status_badge = '<span style="background: #94a3b8; color: white; padding: 6px 14px; border-radius: 20px; font-size: 0.75rem; font-weight: 600;">⚪ Not Rebalanced</span>'
+            elif has_drift:
+                # Profile rebalanced before but now has drift - show blinking rebalance required
+                tile_class = "profile-tile-warning"
+                status_badge = '<span class="drift-badge">🚨 REBALANCE REQUIRED</span>'
             else:
-                # Not maximizing match
-                missed_match = base_salary * (employer_match_cap - biweekly_pct) / 100
-                insights.append({
-                    "icon": "⚠️",
-                    "title": "Opportunity: Not Maximizing Employer Match",
-                    "message": f"You're contributing {biweekly_pct:.1f}% (${employee_contribution:,.0f}) but your employer will match up to "
-                              f"{employer_match_cap:.1f}%. You're currently getting ${employer_contribution:,.0f} in employer match, "
-                              f"but you're leaving ${missed_match:,.0f} of FREE MONEY on the table. "
-                              f"Increase your contribution to {employer_match_cap:.1f}% to capture the full match.",
-                    "priority": "high"
+                # Profile is optimized - green status after rebalance execution
+                tile_class = "profile-tile-optimized"
+                status_badge = '<span class="success-badge">✅ Optimized</span>'
+            
+            with cols[i % 2]:
+                # Clickable title button - navigates to profile page on click
+                if st.button(f"{p_flag} {name}", key=f"title_{name}", use_container_width=True, type="secondary"):
+                    st.session_state.active_profile = name
+                    st.rerun()
+                
+                # Profile tile with clean layout
+                st.markdown(f"""
+                    <div class="{tile_class}" style="cursor: pointer; padding: 24px; margin-top: 0px;">
+                        <div style="margin-bottom: 16px; text-align: center;">
+                            {status_badge}
+                        </div>
+                        <div style="margin: 20px 0; text-align: center;">
+                            <div class="stat-label">Portfolio Value</div>
+                            <div class="stat-value" style="font-size: 2rem;">${curr_v:,.0f}</div>
+                        </div>
+                        <div style="display: flex; justify-content: space-between; padding-top: 16px; border-top: 1px solid #e2e8f0; font-size: 0.9rem; color: #64748b;">
+                            <div>
+                                <div style="font-size: 0.75rem; opacity: 0.8;">Goal</div>
+                                <div style="font-weight: 600;">{p_data['yearly_goal_pct']}%/yr</div>
+                            </div>
+                            <div style="text-align: right;">
+                                <div style="font-size: 0.75rem; opacity: 0.8;">ROI</div>
+                                <div style="font-weight: 700; color: {'#10b981' if roi_pct >= 0 else '#ef4444'};">
+                                    {roi_pct:+.1f}%
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                """, unsafe_allow_html=True)
+                
+                if has_drift:
+                    with st.expander("⚠️ View Drift Details", expanded=False):
+                        for detail in drift_details:
+                            st.caption(f"• {detail}")
+                
+                # Add spacing between tiles
+                st.markdown("<div style='margin-bottom: 16px;'></div>", unsafe_allow_html=True)
+
+else:  # Portfolio Manager
+    if not st.session_state.active_profile or st.session_state.active_profile not in st.session_state.db["profiles"]:
+        st.warning("⚠️ No profile selected. Please select a profile from the sidebar.")
+        st.stop()
+    
+    prof = st.session_state.db["profiles"][st.session_state.active_profile]
+    p_flag = "🇺🇸" if prof.get("currency") == "USD" else "🇨🇦"
+    
+    st.title(f"{p_flag} {st.session_state.active_profile}")
+    
+    # Calculate CAGR for header display
+    prof_start_date = datetime.strptime(prof.get('start_date', str(date.today())), '%Y-%m-%d')
+    prof_years = max((date.today() - prof_start_date.date()).days / 365.25, 0.01)
+    
+    st.caption(f"Portfolio Manager • Inception: {prof.get('start_date', 'N/A')} • Drift Tolerance: {prof.get('drift_tolerance', 5.0)}%")
+    
+    asset_dict = prof.get("assets", {})
+    tickers = list(asset_dict.keys())
+    
+    if not tickers:
+        st.info("👈 **Add your first asset using the sidebar** to start tracking your portfolio")
+        st.markdown("""
+        ### 📝 Quick Start Guide:
+        1. Enter a ticker symbol (e.g., AAPL, MSFT, VTI)
+        2. Set your target allocation percentage
+        3. See the **buying guide** showing exact units needed
+        4. Enter units you currently own
+        5. Click **Save Asset**
+        """)
+        st.stop()
+    
+    # Fetch data and analyze
+    with st.spinner("📊 Analyzing portfolio..."):
+        try:
+            raw = yf.download(tickers, start=prof["start_date"], auto_adjust=True, progress=False)
+            
+            if raw.empty:
+                st.error("❌ Could not fetch historical data. Please check your tickers and date range.")
+                st.stop()
+            
+            data = raw['Close']
+            if len(tickers) == 1:
+                data = pd.DataFrame(data, columns=tickers)
+            
+            v_t = [t for t in tickers if t in data.columns]
+            
+            # Calculate daily portfolio value
+            daily_val = data[v_t].apply(
+                lambda r: sum(r[t] * asset_dict[t]["units"] for t in v_t if t in r.index),
+                axis=1
+            )
+            
+            curr_v = float(daily_val.iloc[-1])
+            start_val = float(prof['principal'])
+            
+            # Calculate time-based metrics
+            years = max((data.index[-1] - data.index[0]).days / 365.25, 0.01)
+            target_val = start_val * (1 + (float(prof['yearly_goal_pct'])/100))**years
+            perc_diff = ((curr_v / target_val) - 1) * 100
+            roi_pct = ((curr_v / start_val) - 1) * 100
+            
+            # DRIFT DETECTION
+            needs_rebalance = False
+            drift_assets = []
+            
+            for t in v_t:
+                actual_pct = float((asset_dict[t]["units"] * data[t].iloc[-1] / curr_v * 100))
+                target_pct = float(asset_dict[t]["target"])
+                drift = float(abs(actual_pct - target_pct))
+                
+                if drift >= prof.get("drift_tolerance", 5.0):
+                    needs_rebalance = True
+                    drift_assets.append((t, drift, actual_pct, target_pct))
+            
+            # DRIFT ALERT BANNER
+            if needs_rebalance:
+                st.markdown("""
+                    <div style="background: linear-gradient(135deg, #fee2e2 0%, #fecaca 100%); 
+                                border: 4px solid #ef4444; border-radius: 16px; padding: 28px; 
+                                margin-bottom: 28px; animation: pulse-alert 2s infinite;">
+                        <h2 style="color: #991b1b; margin: 0 0 16px 0; font-size: 1.8rem;">
+                            🚨 DRIFT ALERT: Immediate Rebalancing Required
+                        </h2>
+                        <p style="color: #7f1d1d; font-size: 1.2rem; margin: 0; line-height: 1.6;">
+                            <strong>{0} asset(s)</strong> have exceeded your <strong>{1}% drift tolerance</strong>.<br>
+                            Your portfolio allocation has shifted significantly. Review the analysis below and execute rebalancing.
+                        </p>
+                    </div>
+                    <style>
+                    @keyframes pulse-alert {{
+                        0%, 100% {{ transform: scale(1); }}
+                        50% {{ transform: scale(1.01); }}
+                    }}
+                    </style>
+                """.format(len(drift_assets), prof.get('drift_tolerance', 5.0)), unsafe_allow_html=True)
+                
+                # Drift details
+                st.markdown("#### 📊 Assets Requiring Rebalancing:")
+                for ticker, drift, actual, target in drift_assets:
+                    col1, col2, col3 = st.columns([2, 2, 2])
+                    with col1:
+                        st.markdown(f"**{ticker}**")
+                    with col2:
+                        st.markdown(f"Drift: **{drift:.2f}%** ⚠️")
+                    with col3:
+                        st.markdown(f"Current: **{actual:.1f}%** (Target: {target:.1f}%)")
+                
+                st.divider()
+            
+            # Determine status badge - consistent with global dashboard
+            has_rebalanced = prof.get("last_rebalanced") is not None
+            has_assets = len(asset_dict) > 0
+            
+            if not has_rebalanced and has_assets:
+                # Profile has assets but never rebalanced - show blinking rebalance required
+                alert_html = '<span class="drift-badge">🚨 REBALANCE REQUIRED</span>'
+            elif not has_rebalanced:
+                # Profile has no assets yet
+                alert_html = '<span style="background: #94a3b8; color: white; padding: 6px 14px; border-radius: 20px; font-size: 0.75rem; font-weight: 600;">⚪ Not Rebalanced</span>'
+            elif needs_rebalance:
+                # Profile rebalanced before but now has drift - show blinking rebalance required
+                alert_html = '<span class="drift-badge">🚨 REBALANCE REQUIRED</span>'
+            else:
+                # Profile is optimized - green status after rebalance execution
+                alert_html = '<span class="success-badge">✅ Optimized</span>'
+            
+            st.markdown(f"""
+                <div class="premium-card">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px;">
+                        <h2 style="margin:0;">Portfolio Analytics</h2>
+                        {alert_html}
+                    </div>
+                </div>
+            """, unsafe_allow_html=True)
+            
+            # Key Metrics
+            col_s1, col_s2, col_s3, col_s4, col_s5 = st.columns(5)
+            
+            with col_s1:
+                st.markdown(f"""
+                    <div class="stat-item">
+                        <div class="stat-label">Current Value</div>
+                        <div class="stat-value">${curr_v:,.0f}</div>
+                    </div>
+                """, unsafe_allow_html=True)
+            
+            with col_s2:
+                st.markdown(f"""
+                    <div class="stat-item">
+                        <div class="stat-label">Total ROI</div>
+                        <div class="stat-value" style="color: {'#10b981' if roi_pct >= 0 else '#ef4444'};">
+                            {roi_pct:+.2f}%
+                        </div>
+                    </div>
+                """, unsafe_allow_html=True)
+            
+            with col_s3:
+                # Calculate CAGR for display
+                profile_cagr = ((curr_v / start_val) ** (1 / prof_years) - 1) * 100 if start_val > 0 else 0
+                st.markdown(f"""
+                    <div class="stat-item">
+                        <div class="stat-label">CAGR</div>
+                        <div class="stat-value" style="color: {'#10b981' if profile_cagr >= 0 else '#ef4444'};">
+                            {profile_cagr:+.2f}%
+                        </div>
+                    </div>
+                """, unsafe_allow_html=True)
+            
+            with col_s4:
+                st.markdown(f"""
+                    <div class="stat-item">
+                        <div class="stat-label">vs Target Path</div>
+                        <div class="stat-value" style="color: {'#10b981' if perc_diff >= 0 else '#ef4444'};">
+                            {perc_diff:+.2f}%
+                        </div>
+                    </div>
+                """, unsafe_allow_html=True)
+            
+            with col_s5:
+                annualized = ((curr_v / start_val) ** (1/years) - 1) * 100
+                st.markdown(f"""
+                    <div class="stat-item">
+                        <div class="stat-label">Annualized Return</div>
+                        <div class="stat-value" style="color: {'#10b981' if annualized >= 0 else '#ef4444'};">
+                            {annualized:.2f}%
+                        </div>
+                    </div>
+                """, unsafe_allow_html=True)
+            
+            st.divider()
+            
+            # Performance Chart
+            st.markdown("### 📈 Performance vs Goal Path")
+            st.caption("Track your portfolio's actual performance against your target growth trajectory")
+            
+            fig = go.Figure()
+            
+            fig.add_trace(go.Scatter(
+                x=data.index,
+                y=daily_val,
+                name='Actual Portfolio',
+                line=dict(color='#3b82f6', width=3),
+                fill='tozeroy',
+                fillcolor='rgba(59, 130, 246, 0.1)',
+                hovertemplate='<b>Date:</b> %{x|%Y-%m-%d}<br>' +
+                             '<b>Portfolio Value:</b> $%{y:,.2f}<br>' +
+                             '<b>Performance:</b> Actual<br>' +
+                             '<extra></extra>'
+            ))
+            
+            days = np.arange(len(data.index))
+            daily_rate = (float(prof['yearly_goal_pct']) / 100) / 365.25
+            target_path = start_val * (1 + daily_rate) ** days
+            
+            fig.add_trace(go.Scatter(
+                x=data.index,
+                y=target_path,
+                name=f'Goal Path ({prof["yearly_goal_pct"]}%/yr)',
+                line=dict(color='#10b981', width=2, dash='dash'),
+                hovertemplate='<b>Date:</b> %{x|%Y-%m-%d}<br>' +
+                             '<b>Target Value:</b> $%{y:,.2f}<br>' +
+                             f'<b>Goal Rate:</b> {prof["yearly_goal_pct"]}% annually<br>' +
+                             '<extra></extra>'
+            ))
+            
+            fig.update_layout(
+                hovermode='x unified',
+                plot_bgcolor='white',
+                height=550,
+                hoverlabel=dict(
+                    bgcolor="white",
+                    font_size=14,
+                    font_family="Inter, sans-serif",
+                    bordercolor="#e2e8f0"
+                ),
+                xaxis=dict(
+                    showgrid=True,
+                    gridcolor='#f1f5f9',
+                    title='Date',
+                    title_font=dict(size=14, color='#64748b')
+                ),
+                yaxis=dict(
+                    showgrid=True,
+                    gridcolor='#f1f5f9',
+                    title='Portfolio Value ($)',
+                    title_font=dict(size=14, color='#64748b')
+                ),
+                legend=dict(
+                    orientation="h",
+                    yanchor="bottom",
+                    y=1.02,
+                    xanchor="right",
+                    x=1,
+                    font=dict(size=12)
+                ),
+                margin=dict(l=60, r=40, t=40, b=60)
+            )
+            
+            st.plotly_chart(fig, use_container_width=True)
+            
+            st.divider()
+            
+            # Rebalance Analysis
+            st.markdown("### ⚖️ Rebalance Analysis")
+            st.caption("Review asset allocation drift and required trades to restore target percentages")
+            
+            rows = []
+            total_turnover = 0
+            total_current_val = 0
+            total_target_val = 0
+            
+            for t in v_t:
+                p = float(data[t].iloc[-1])
+                cur_u = float(asset_dict[t]["units"])
+                tar_w = float(asset_dict[t]['target'])
+                
+                act_val = cur_u * p
+                act_w = (act_val / curr_v * 100)
+                drift = act_w - tar_w
+                
+                tar_val = (tar_w / 100) * curr_v
+                tar_u = tar_val / p
+                
+                val_diff = tar_val - act_val
+                unit_diff = tar_u - cur_u
+                
+                total_turnover += abs(val_diff)
+                total_current_val += act_val
+                total_target_val += tar_val
+                
+                if abs(drift) < 0.1:
+                    action = "—"
+                else:
+                    action = "BUY" if drift < 0 else "SELL"
+                
+                # Color code drift
+                drift_color = "🔴" if drift < -0.5 else ("🟢" if drift > 0.5 else "⚪")
+                
+                rows.append({
+                    "Ticker": t,
+                    "Current %": f"{act_w:.2f}%",
+                    "Target %": f"{tar_w:.2f}%",
+                    "Drift": f"{drift_color} {drift:+.2f}%",
+                    "Action": action,
+                    "Units Δ": f"{unit_diff:+.4f}",
+                    "Value Δ": f"${val_diff:+,.2f}"
                 })
-        else:
-            # Not contributing at all
-            potential_match = base_salary * (employer_match_cap / 100)
-            insights.append({
-                "icon": "🚨",
-                "title": "Critical: Missing 100% of Employer Match",
-                "message": f"Your employer offers to match up to {employer_match_cap:.1f}% of your base salary (${potential_match:,.0f} per year). "
-                          f"You're currently contributing 0%, so you're leaving ALL of this free money on the table. "
-                          f"This is a guaranteed 100% return on your contribution up to {employer_match_cap:.1f}%. Start contributing immediately!",
-                "priority": "high"
+            
+            # Add total row
+            rows.append({
+                "Ticker": "**TOTAL**",
+                "Current %": "100.00%",
+                "Target %": "100.00%",
+                "Drift": "—",
+                "Action": "—",
+                "Units Δ": "—",
+                "Value Δ": f"**${total_turnover:,.2f}**"
             })
-    
-    # Insight 5: Efficiency score
-    efficiency_score = (total_rrsp_contributions / max(1, rrsp_room)) * 0.5 + \
-                      (tfsa_lump_sum / max(1, tfsa_room)) * 0.5
-    
-    if efficiency_score < 0.5:
-        insights.append({
-            "icon": "📈",
-            "title": "Efficiency Opportunity",
-            "message": f"Your contribution room utilization is {efficiency_score*100:.1f}%. "
-                      f"You're leaving significant tax advantages on the table. "
-                      f"Consider increasing your automatic contributions or making larger lump-sum deposits.",
-            "priority": "medium"
-        })
-    elif efficiency_score > 0.8:
-        insights.append({
-            "icon": "✨",
-            "title": "Excellent Optimization",
-            "message": f"Your contribution room utilization is {efficiency_score*100:.1f}%. "
-                      f"You're making excellent use of your available tax-advantaged space. "
-                      f"Keep up this disciplined approach to wealth building!",
-            "priority": "high"
-        })
-    
-    # Display insights
-    for insight in insights:
-        priority_class = "priority-high" if insight['priority'] == "high" else "priority-medium"
-        st.markdown(f'''
-            <div class="premium-card {priority_class}">
-                <h4>{insight['icon']} {insight['title']}</h4>
-                <p style="line-height: 1.6;">{insight['message']}</p>
-            </div>
-        ''', unsafe_allow_html=True)
-    
-    if not insights:
-        st.success("✅ Your strategy is well-optimized! No critical action items identified.")
+            
+            df_rebalance = pd.DataFrame(rows)
+            st.dataframe(df_rebalance, use_container_width=True, hide_index=True)
+            
+            st.caption(f"📊 Total Trade Volume: **${total_turnover:,.2f}**")
+            
+            st.divider()
+            
+            # Execution
+            col_exec1, col_exec2 = st.columns(2)
+            
+            with col_exec1:
+                st.markdown("### 🚀 Execute Rebalance")
+                st.caption("Adjust portfolio units to match target allocation")
+                
+                if needs_rebalance:
+                    st.warning("⚠️ **Rebalancing recommended**")
+                else:
+                    st.success("✓ **Portfolio optimally balanced**")
+                
+                if st.button("⚡ Execute Rebalancing", type="primary", use_container_width=True, disabled=not needs_rebalance):
+                    detail_log = f"Rebalanced at {datetime.now().strftime('%Y-%m-%d %H:%M')} - "
+                    changes = []
+                    
+                    for t in v_t:
+                        old_units = float(asset_dict[t]["units"])
+                        new_units = float((asset_dict[t]["target"] / 100 * curr_v) / data[t].iloc[-1])
+                        asset_dict[t]["units"] = new_units
+                        changes.append(f"{t}: {new_units-old_units:+.4f}")
+                    
+                    detail_log += ", ".join(changes)
+                    prof.setdefault("rebalance_stats", []).insert(0, detail_log)
+                    prof["rebalance_stats"] = prof["rebalance_stats"][:20]
+                    log_profile(prof, "Portfolio rebalanced")
+                    save_db(st.session_state.db)
+                    
+                    st.success("✅ Rebalanced!")
+                    st.balloons()
+                    st.rerun()
+                
+                st.markdown("#### 📊 Rebalance History")
+                for entry in prof.get("rebalance_stats", [])[:5]:
+                    st.caption(entry)
+            
+            with col_exec2:
+                st.markdown("### 📜 Activity Log")
+                for log_entry in prof.get("rebalance_logs", [])[:10]:
+                    st.caption(f"**{log_entry['date']}**: {log_entry['event']}")
+        
+        except Exception as e:
+            st.error(f"❌ Error: {str(e)}")
+            st.stop()
 
 # Footer
 st.divider()
 st.markdown("""
     <div style="text-align: center; color: #64748b; padding: 20px;">
-        <p><strong>Canadian Tax & Wealth Velocity Suite</strong></p>
-        <p style="font-size: 0.9em;">
-            Tax rates are based on 2025/2026 Ontario combined federal + provincial brackets. 
-            Always consult with a qualified tax professional for personalized advice.
-        </p>
-        <p style="font-size: 0.85em; margin-top: 10px;">
-            RRSP contribution limit: 18% of previous year's income (max $31,560) | 
-            TFSA annual limit: $7,000
-        </p>
+        <p><strong>AlphaStream Wealth Master</strong> • v4.0</p>
+        <p style="font-size: 0.85rem;">Market data by Yahoo Finance • For informational purposes only</p>
     </div>
 """, unsafe_allow_html=True)
-
-    with col_status2:
-        if is_optimized:
-            st.markdown("""
-                <div style="background: linear-gradient(135deg, #d1fae5 0%, #a7f3d0 100%); 
-                     padding: 20px; border-radius: 12px; border: 2px solid #10b981; text-align: center;">
-                    <div style="font-size: 3em;">🟢</div>
-                    <div style="font-size: 1.2em; font-weight: 600; color: #065f46; margin-top: 10px;">
-                        OPTIMIZED
-                    </div>
-                    <div style="font-size: 0.9em; color: #047857; margin-top: 5px;">
-                        This year will show GREEN
-                    </div>
-                </div>
-            """, unsafe_allow_html=True)
-    
-    # Key Metrics Dashboard
-    st.markdown("### 📊 Strategic Overview")
-    
-    if other_income > 0:
-        st.info(f"💼 Income Breakdown: T4 ${t4_gross_income:,.0f} + Other ${other_income:,.0f} = Total ${total_gross_income:,.0f}")
-    
-    # Optimization Status Banner
-    if is_optimized:
-        st.success(f"🟢 **OPTIMIZED** - Your taxable income (${taxable_income:,.0f}) is below the Penthouse threshold (${penthouse_threshold:,.0f}). This year will show GREEN on the home page.")
-    else:
-        deficit = taxable_income - penthouse_threshold
-        additional_rrsp_needed = deficit
-        st.warning(f"🟠 **IN PROGRESS** - Your taxable income (${taxable_income:,.0f}) exceeds the Penthouse threshold by ${deficit:,.0f}. "
-                  f"Add ${additional_rrsp_needed:,.0f} more to RRSP contributions to achieve GREEN optimization status and save ${deficit * 0.4797:,.0f} in taxes.")
-        
-        # Pending Items Checklist
-        st.markdown("### ✅ Pending Items to Reach Optimization")
-        
-        pending_items = []
-        
-        # Item 1: RRSP contribution needed
-        if deficit > 0:
-            pending_items.append({
-                "item": "Increase RRSP Contributions",
-                "current": f"${total_rrsp_contributions:,.0f}",
-                "target": f"${total_rrsp_contributions + deficit:,.0f}",
-                "action": f"Add ${deficit:,.0f} to either 'RRSP Lump Sum (Tax Optimization)' or 'RRSP Lump Sum (Additional Refund)' in the sidebar",
-                "impact": f"Saves ${deficit * 0.4797:,.0f} in taxes at 47.97% Penthouse rate"
-            })
-        
-        # Item 2: Room availability check
-        if deficit > remaining_rrsp_room:
-            pending_items.append({
-                "item": "⚠️ Insufficient RRSP Room",
-                "current": f"${remaining_rrsp_room:,.0f} available",
-                "target": f"${deficit:,.0f} needed",
-                "action": f"You need ${deficit - remaining_rrsp_room:,.0f} more RRSP room than available. Consider: (1) Verify your NOA room is correct, (2) Use spousal RRSP if married, (3) Accept partial optimization this year",
-                "impact": "May not achieve full green status this year"
-            })
-        
-        if pending_items:
-            for idx, item in enumerate(pending_items, 1):
-                st.markdown(f"""
-                    <div class="premium-card" style="border-left: 4px solid #f59e0b;">
-                        <h4>Item {idx}: {item['item']}</h4>
-                        <p><strong>Current:</strong> {item['current']} | <strong>Target:</strong> {item['target']}</p>
-                        <p><strong>Action Required:</strong> {item['action']}</p>
-                        <p style="color: #059669;"><strong>Impact:</strong> {item['impact']}</p>
-                    </div>
-                """, unsafe_allow_html=True)
-        else:
-            st.success("✅ No pending items - year is optimized!")
-    
-    col1, col2, col3, col4, col5 = st.columns(5)
-    
-    with col1:
-        st.metric(
-            "Total Gross Income",
-            f"${total_gross_income:,.0f}",
-            delta=f"+${other_income:,.0f} other" if other_income > 0 else None,
-            help="T4 employment income plus other taxable income"
-        )
-    
-    with col2:
-        st.metric(
-            "Tax-Shielded Income",
-            f"${taxable_income:,.0f}",
-            delta=f"-${total_rrsp_contributions:,.0f}",
-            delta_color="inverse",
-            help="Income after RRSP deductions"
-        )
-    
-    with col3:
-        st.metric(
-            "Marginal Tax Rate",
-            f"{marginal_rate*100:.2f}%",
-            help="Your current tax bracket rate"
-        )
-    
-    with col4:
-        st.metric(
-            "Estimated Tax Refund",
-            f"${estimated_refund:,.0f}",
-            delta=f"+{(estimated_refund/max(1,total_rrsp_contributions))*100:.1f}% ROI",
-            help="Tax refund from RRSP contributions"
-        )
-    
-    with col5:
-        st.metric(
-            "Total Portfolio Value",
-            f"${total_portfolio_value:,.0f}",
-            delta=f"+{target_cagr*100:.1f}% target",
-            help="Combined RRSP + TFSA projected end-of-year value"
-        )
-        else:
-            st.markdown("""
-                <div style="background: linear-gradient(135deg, #fed7aa 0%, #fdba74 100%); 
-                     padding: 20px; border-radius: 12px; border: 2px solid #f97316; text-align: center;">
-                    <div style="font-size: 3em;">🟠</div>
-                    <div style="font-size: 1.2em; font-weight: 600; color: #7c2d12; margin-top: 10px;">
-                        IN PROGRESS
-                    </div>
-                    <div style="font-size: 0.9em; color: #9a3412; margin-top: 5px;">
-                        More RRSP needed
-                    </div>
-                </div>
-            """, unsafe_allow_html=True) = latest_data.get("target_cagr", 7.0) / 100
-            rrsp_start = latest_data.get("rrsp_balance_start", 0)
-            tfsa_start = latest_data.get("tfsa_balance_start", 0)
-            
-            annual_rrsp = (latest_data.get('base_salary', 0) * 
-                          (latest_data.get('biweekly_pct', 0) + latest_data.get('employer_match', 0)) / 100) + \
-                          latest_data.get('rrsp_lump_sum_optimization', 0) + \
-                          latest_data.get('rrsp_lump_sum_additional', 0) + \
-                          latest_data.get('rrsp_lump_sum', 0)
-            tfsa_contrib = latest_data.get('tfsa_lump_sum', 0)
-            
-            rrsp_growth = rrsp_start * target_cagr + annual_rrsp * (target_cagr / 2)
-            tfsa_growth = tfsa_start * target_cagr + tfsa_contrib * (target_cagr / 2)
-            
-            latest_rrsp_balance = rrsp_start + rrsp_growth + annual_rrsp
-            latest_tfsa_balance = tfsa_start + tfsa_growth + tfsa_contrib
-        
-        col1, col2, col3, col4 = st.columns(4)
-        
-        latest_year = max(all_history.keys(), key=lambda x: int(x))
-        
-        with col1:
-            st.metric(
-                "Current RRSP Balance",
-                f"${latest_rrsp_balance:,.0f}",
-                delta=f"${total_rrsp_all:,.0f} contributed",
-                help=f"Projected RRSP value at end of {latest_year}, including all growth and contributions"
-            )
-        
-        with col2:
-            st.metric(
-                "Current TFSA Balance",
-                f"${latest_tfsa_balance:,.0f}",
-                delta=f"${total_tfsa_all:,.0f} contributed",
-                help=f"Projected TFSA value at end of {latest_year}, including all growth and contributions"
-            )
-        
-        with col3:
-            st.metric(
-                "Total Tax Shield Value",
-                f"${total_tax_shield:,.0f}",
-                help="Cumulative tax refunds generated from all RRSP contributions across tracked years"
-            )
-        
-        with col4:
-            growth_rate_pct = (total_investment_growth / max(1, total_contributions)) * 100 if total_contributions > 0 else 0
-            st.metric(
-                "Total Portfolio Value",
-                f"${total_portfolio_value:,.0f}",
-                delta=f"+${total_investment_growth:,.0f} growth ({growth_rate_pct:.1f}%)",
-                help=f"Combined RRSP + TFSA value. Growth represents investment returns above your ${total_contributions:,.0f} total contributions"
-            )
-        
-        # Detailed explanation for Global Wealth Summary
-        st.markdown("---")
-        st.markdown("#### 📖 Understanding Your Global Wealth Summary")
-        st.markdown(f"""
-        This dashboard shows your complete retirement portfolio snapshot as of **December {latest_year}** (end of the most recent year you've planned):
-        
-        **💰 Current RRSP Balance: ${latest_rrsp_balance:,.0f}**
-        - This is your projected RRSP account value at the end of {latest_year}
-        - Includes all contributions from all years you've tracked: ${total_rrsp_all:,.0f}
-        - Includes compound investment growth based on your target CAGR settings
-        - This money is tax-deferred (you'll pay tax when you withdraw in retirement)
-        
-        **🌱 Current TFSA Balance: ${latest_tfsa_balance:,.0f}**
-        - This is your projected TFSA account value at the end of {latest_year}
-        - Includes all contributions from all years you've tracked: ${total_tfsa_all:,.0f}
-        - Includes compound investment growth based on your target CAGR settings
-        - This money grows 100% tax-free (no tax when you withdraw, ever!)
-        
-        **🛡️ Total Tax Shield Value: ${total_tax_shield:,.0f}**
-        - This is the total amount of tax refunds you've generated through RRSP contributions
-        - Every dollar you contribute to RRSP saves taxes at your marginal rate
-        - Example: If you're in the 33.89% bracket, a $10,000 RRSP contribution saves $3,389 in taxes
-        - This is "free money" from the government that you can reinvest (ideally into TFSA)
-        
-        **💎 Total Portfolio Value: ${total_portfolio_value:,.0f}**
-        - This is your combined RRSP + TFSA wealth: ${latest_rrsp_balance:,.0f} + ${latest_tfsa_balance:,.0f}
-        - You've contributed a total of ${total_contributions:,.0f} across all years
-        - Your investments have grown by ${total_investment_growth:,.0f} ({growth_rate_pct:.1f}% return on your contributions)
-        - This growth comes from compound investment returns over time
-        - **Bottom line**: You put in ${total_contributions:,.0f}, and it's now worth ${total_portfolio_value:,.0f}!
-        """)
-        
-        st.divider()
-        
-        # Multi-Year Portfolio Growth Chart
-        st.markdown("### 📈 Portfolio Growth Over Time")
-        
-        description_box(
-            "Wealth Trajectory Visualization",
-            "Track your portfolio's evolution across time. Each year shows two data points: January (start) and December (end). "
-            "The stacked areas show how your RRSP (blue) and TFSA (green) accounts grow through contributions and investment returns."
-        )
-        
-        portfolio_history = []
-        
-        for yr in sorted(all_history.keys(), key=lambda x: int(x)):
-            data = all_history[yr]
-            
-            t4_gross = data.get('t4_gross_income', 0)
-            other_inc = data.get('other_income', 0)
-            total_gross = t4_gross + other_inc
-            
-            target_cagr = data.get("target_cagr", 7.0) / 100
-            rrsp_start = data.get("rrsp_balance_start", 0)
-            tfsa_start = data.get("tfsa_balance_start", 0)
-            
-            # Use helper function for RRSP calculation
-            annual_rrsp = calculate_annual_rrsp(data)
-            tfsa_contrib = data.get('tfsa_lump_sum', 0)
-            
-            # Start of year
-            portfolio_history.append({
-                "Year": f"{yr} (Jan)",
-                "RRSP Balance": rrsp_start,
-                "TFSA Balance": tfsa_start,
-                "Total": rrsp_start + tfsa_start
-            })
-            
-            # End of year (with growth and contributions)
-            rrsp_growth = rrsp_start * target_cagr + annual_rrsp * (target_cagr / 2)
-            tfsa_growth = tfsa_start * target_cagr + tfsa_contrib * (target_cagr / 2)
-            
-            rrsp_end = rrsp_start + rrsp_growth + annual_rrsp
-            tfsa_end = tfsa_start + tfsa_growth + tfsa_contrib
-            
-            portfolio_history.append({
-                "Year": f"{yr} (Dec)",
-                "RRSP Balance": rrsp_end,
-                "TFSA Balance": tfsa_end,
-                "Total": rrsp_end + tfsa_end
-            })
-        
-        if portfolio_history:
-            df_portfolio = pd.DataFrame(portfolio_history)
-            
-            # Stacked area chart for portfolio composition
-            portfolio_melted = df_portfolio[['Year', 'RRSP Balance', 'TFSA Balance']].melt(
-                'Year',
-                var_name='Account',
-                value_name='Balance'
-            )
-            
-            portfolio_chart = alt.Chart(portfolio_melted).mark_area(
-                opacity=0.8,
-                line=True
-            ).encode(
-                x=alt.X('Year:N', title='Timeline', axis=alt.Axis(labelAngle=-45)),
-                y=alt.Y('Balance:Q', title='Portfolio Value ($)', stack='zero'),
-                color=alt.Color('Account:N',
-                    scale=alt.Scale(
-                        domain=['RRSP Balance', 'TFSA Balance'],
-                        range=['#3b82f6', '#10b981']
-                    ),
-                    legend=alt.Legend(title="Account Type")
-                ),
-                tooltip=[
-                    alt.Tooltip('Year:N', title='Period'),
-                    alt.Tooltip('Account:N', title='Account'),
-                    alt.Tooltip('Balance:Q', title='Balance', format='$,.0f')
-                ]
-            ).properties(height=400)
-            
-            st.altair_chart(portfolio_chart, use_container_width=True)
-            
-            st.markdown("---")
-            st.markdown("#### 📖 How to Read Your Portfolio Growth Chart")
-            st.markdown("""
-            This stacked area chart shows how your retirement portfolio has grown over time. Here's what you're seeing:
-            
-            **📊 The Colored Areas:**
-            - **Blue area (bottom)**: Your RRSP account balance over time
-            - **Green area (top)**: Your TFSA account balance stacked on top
-            - **Total height**: Your complete portfolio value (RRSP + TFSA combined)
-            
-            **📅 The Timeline (X-Axis):**
-            - Each year appears TWICE: once for January (start of year) and once for December (end of year)
-            - **January markers**: Show your portfolio value on January 1st, before making any new contributions that year
-            - **December markers**: Show your portfolio value on December 31st, after all contributions and investment growth
-            
-            **📈 What the Growth Represents:**
-            - **Vertical jumps from Jan → Dec**: This is your contributions PLUS investment returns for that year
-            - **Vertical jumps from Dec → next Jan**: Usually flat (representing year rollover)
-            - **Overall upward slope**: Shows your wealth-building momentum over multiple years
-            
-            **💡 Key Insights to Look For:**
-            1. **Steeper slopes** = faster wealth accumulation (higher contributions or better returns)
-            2. **Blue getting bigger** = RRSP growing (tax-deferred, good for retirement)
-            3. **Green getting bigger** = TFSA growing (tax-free, good for any goal)
-            4. **Consistent pattern** = disciplined, systematic saving (the best path to wealth)
-            
-            **🎯 Example Reading:**
-            - If you see a big jump from 2025 Dec to 2026 Dec, that means you made significant contributions in 2026 AND/OR had strong investment returns
-            - If the chart is mostly blue, you're focusing on tax-deferred RRSP savings
-            - If the chart has more green, you're prioritizing tax-free TFSA growth
-            - The ideal strategy typically uses BOTH accounts strategically
-            """)
-            
-            # Summary stats
-            col_stats1, col_stats2, col_stats3 = st.columns(3)
-            
-            st.markdown("#### 📊 Portfolio Performance Metrics")
-            st.markdown("""
-                These metrics summarize your portfolio's performance across all tracked years:
-                - **Total Growth**: Dollar amount your portfolio has grown beyond contributions
-                - **Annualized Return (CAGR)**: Your average annual return rate - compare this to your target CAGR
-                - **Years Tracked**: How many years of data you've entered for analysis
-            """)
-            
-            first_total = df_portfolio.iloc[0]['Total']
-            last_total = df_portfolio.iloc[-1]['Total']
-            total_return = last_total - first_total
-            total_return_pct = (total_return / max(1, first_total)) * 100 if first_total > 0 else 0
-            
-            # Calculate actual time span (from first Jan to last Dec)
-            first_year = int(df_portfolio.iloc[0]['Year'].split()[0])
-            last_year = int(df_portfolio.iloc[-1]['Year'].split()[0])
-            years_span = last_year - first_year + 1  # Include both start and end year
-            
-            with col_stats1:
-                st.metric(
-                    "Total Growth",
-                    f"${total_return:,.0f}",
-                    delta=f"+{total_return_pct:.1f}%",
-                    help=f"Portfolio growth from {first_year} to {last_year}"
-                )
-            
-            with col_stats2:
-                # CAGR formula: ((Ending Value / Beginning Value)^(1/years)) - 1
-                annualized_return = ((last_total / max(1, first_total)) ** (1 / max(1, years_span)) - 1) * 100 if first_total > 0 and years_span > 0 else 0
-                st.metric(
-                    "Annualized Return (CAGR)",
-                    f"{annualized_return:.2f}%",
-                    help=f"Compound annual growth rate over {years_span} year{'s' if years_span != 1 else ''}"
-                )
-            
-            with col_stats3:
-                st.metric(
-                    "Years Tracked",
-                    f"{len(all_history)}",
-                    help="Number of years with saved data"
-                )
-        
-        st.divider()
-    
-    # Planning Years Grid
-    st.markdown("### 📅 Planning Years")
-    
-    description_box(
-        "Year-by-Year Strategy Navigator",
-        "Select any year to view detailed tax optimization strategies. Each tile shows optimization status: "
-        "Empty years need data entry, In Progress years need additional RRSP contributions to avoid high tax brackets, "
-        "and Optimized years have achieved maximum tax efficiency."
-    )
-    
-    # Status Legend
-    st.markdown("""
-        <div style="background: #f8fafc; padding: 15px; border-radius: 8px; margin-bottom: 20px;">
-            <strong>📊 Year Status Legend:</strong>
-            <span style="margin-left: 20px;">⚪ <strong>Empty</strong> - No data saved yet</span>
-            <span style="margin-left: 20px;">🟠 <strong>In Progress</strong> - Has data but taxable income ≥ $181,440 (Penthouse exposure)</span>
-            <span style="margin-left: 20px;">🟢 <strong>Optimized</strong> - Fully optimized with taxable income < $181,440</span>
-        </div>
-    """, unsafe_allow_html=True)
-    
-    # Add new year functionality - simple row
-    col_add1, col_add2, col_add3 = st.columns([2, 1, 1])
-    with col_add1:
-        new_year_input = st.number_input(
-            "Add Planning Year",
-            min_value=2020,
-            max_value=2050,
-            value=2031,
-            step=1,
-            key="new_year_input",
-            help="Enter a year between 2020-2050 to add it to your planning grid"
-        )
-    with col_add2:
-        if st.button("➕ Add Year", use_container_width=True):
-            if str(new_year_input) not in all_history:
-                # Create empty year entry
-                save_year_data(new_year_input, {
-                    "t4_gross_income": 0,
-                    "other_income": 0,
-                    "base_salary": 0,
-                    "biweekly_pct": 0,
-                    "employer_match": 0,
-                    "rrsp_lump_sum_optimization": 0,
-                    "rrsp_lump_sum_additional": 0,
-                    "tfsa_lump_sum": 0,
-                    "rrsp_room": 0,
-                    "tfsa_room": 0,
-                    "rrsp_balance_start": 0,
-                    "tfsa_balance_start": 0,
-                    "target_cagr": 7.0
-                })
-                st.success(f"✓ Year {new_year_input} added!")
-                st.rerun()
-            else:
-                st.warning(f"Year {new_year_input} already exists!")
-    with col_add3:
-        st.write("")  # Spacer
-    
-    st.divider()
-    
-    # Get all years (saved + default range)
-    all_years = set(range(2024, 2031))
-    all_years.update([int(yr) for yr in all_history.keys()])
-    years_to_show = sorted(list(all_years))
-    
-    cols_per_row = 4
-    
-    for row_start in range(0, len(years_to_show), cols_per_row):
-        cols = st.columns(cols_per_row)
-        for i, yr in enumerate(years_to_show[row_start:row_start + cols_per_row]):
-            with cols[i]:
-                is_saved = str(yr) in all_history
-                is_optimized = is_year_optimized(all_history.get(str(yr), {})) if is_saved else False
-                
-                # Determine status and styling
-                if not is_saved:
-                    # Gray/Slate - Empty
-                    status_emoji = "⚪"
-                    status_text = "Empty"
-                    button_label = f"📅 **{yr}**\n{status_emoji} {status_text}"
-                    container_style = "background: linear-gradient(135deg, #f1f5f9 0%, #e2e8f0 100%); border: 2px solid #94a3b8; border-radius: 12px; padding: 4px;"
-                elif is_optimized:
-                    # Green - Optimized
-                    data = all_history[str(yr)]
-                    annual_rrsp = calculate_annual_rrsp(data)
-                    status_emoji = "🟢"
-                    status_text = f"${annual_rrsp:,.0f}"
-                    button_label = f"📅 **{yr}**\n{status_text}\n{status_emoji} Optimized"
-                    container_style = "background: linear-gradient(135deg, #d1fae5 0%, #a7f3d0 100%); border: 2px solid #10b981; border-radius: 12px; padding: 4px;"
-                else:
-                    # Orange - In Progress
-                    data = all_history[str(yr)]
-                    annual_rrsp = calculate_annual_rrsp(data)
-                    status_emoji = "🟠"
-                    status_text = f"${annual_rrsp:,.0f}"
-                    button_label = f"📅 **{yr}**\n{status_text}\n{status_emoji} In Progress"
-                    container_style = "background: linear-gradient(135deg, #fed7aa 0%, #fdba74 100%); border: 2px solid #f97316; border-radius: 12px; padding: 4px;"
-                
-                # Wrap button in styled container
-                st.markdown(f'<div style="{container_style}">', unsafe_allow_html=True)
-                
-                # Create the button
-                if st.button(
-                    button_label,
-                    key=f"home_{yr}",
-                    use_container_width=True,
-                    type="primary" if is_saved else "secondary"
-                ):
-                    st.session_state.selected_year = yr
-                    st.session_state.current_page = "Year View"
-                    st.rerun()
-                
-                st.markdown('</div>', unsafe_allow_html=True)
-    
-    # Multi-Year Analytics
-    if all_history and len(all_history) > 1:
-        st.divider()
-        st.markdown("### 📈 Multi-Year Analytics & Trends")
-        
-        description_box(
-            "Comparative Analysis Dashboard",
-            "Analyze patterns and trends across multiple years. The burndown charts show how efficiently you're using available contribution room. "
-            "Income charts reveal your tax-shielding effectiveness. Contribution trends help you plan future savings strategies."
-        )
-        
-        # Prepare data for charts
-        chart_data = []
-        room_data = []
-        burndown_data = []
-        
-        for yr, data in sorted(all_history.items(), key=lambda x: x[0]):
-            t4_gross = data.get('t4_gross_income', 0)
-            other_inc = data.get('other_income', 0)
-            total_gross = t4_gross + other_inc
-            
-            # Use helper function for RRSP calculation
-            annual_rrsp = calculate_annual_rrsp(data)
-            tfsa_contrib = data.get('tfsa_lump_sum', 0)
-            gross = total_gross
-            
-            rrsp_room_avail = data.get('rrsp_room', 0)
-            tfsa_room_avail = data.get('tfsa_room', 0)
-            
-            chart_data.append({
-                "Year": yr,
-                "Gross Income": gross,
-                "Taxable Income": gross - annual_rrsp,
-                "Tax Shield": annual_rrsp,
-                "RRSP": annual_rrsp,
-                "TFSA": tfsa_contrib
-            })
-            
-            room_data.append({
-                "Year": yr,
-                "Account": "RRSP",
-                "Remaining Room": max(0, rrsp_room_avail - annual_rrsp)
-            })
-            room_data.append({
-                "Year": yr,
-                "Account": "TFSA",
-                "Remaining Room": max(0, tfsa_room_avail - tfsa_contrib)
-            })
-            
-            # Burndown data - showing used vs available
-            burndown_data.append({
-                "Year": yr,
-                "Account": "RRSP",
-                "Status": "Used",
-                "Amount": annual_rrsp
-            })
-            burndown_data.append({
-                "Year": yr,
-                "Account": "RRSP",
-                "Status": "Available",
-                "Amount": max(0, rrsp_room_avail - annual_rrsp)
-            })
-            burndown_data.append({
-                "Year": yr,
-                "Account": "TFSA",
-                "Status": "Used",
-                "Amount": tfsa_contrib
-            })
-            burndown_data.append({
-                "Year": yr,
-                "Account": "TFSA",
-                "Status": "Available",
-                "Amount": max(0, tfsa_room_avail - tfsa_contrib)
-            })
-        
-        df_chart = pd.DataFrame(chart_data)
-        df_room = pd.DataFrame(room_data)
-        df_burndown = pd.DataFrame(burndown_data)
-        
-        # RRSP & TFSA Burndown Charts
-        st.markdown("**Contribution Room Burndown Analysis**")
-        
-        description_box(
-            "Room Utilization Efficiency",
-            "These stacked bar charts show how much of your available contribution room you're actually using each year. "
-            "Green/Blue represents room you've used (good!), gray shows unused room (opportunity cost). "
-            "Higher utilization percentages mean you're maximizing your tax-advantaged space."
-        )
-        
-        col_burn1, col_burn2 = st.columns(2)
-        
-        with col_burn1:
-            st.markdown("**RRSP Room Utilization**")
-            
-            rrsp_burndown = df_burndown[df_burndown['Account'] == 'RRSP']
-            
-            rrsp_chart = alt.Chart(rrsp_burndown).mark_bar().encode(
-                x=alt.X('Year:N', title='Year'),
-                y=alt.Y('Amount:Q', title='RRSP Room ($)', stack='zero'),
-                color=alt.Color('Status:N',
-                    scale=alt.Scale(
-                        domain=['Used', 'Available'],
-                        range=['#10b981', '#e2e8f0']
-                    ),
-                    legend=alt.Legend(title="Room Status")
-                ),
-                tooltip=[
-                    alt.Tooltip('Year:N', title='Year'),
-                    alt.Tooltip('Status:N', title='Status'),
-                    alt.Tooltip('Amount:Q', title='Amount', format='$,.0f')
-                ]
-            ).properties(height=320)
-            
-            st.altair_chart(rrsp_chart, use_container_width=True)
-            
-            st.markdown("**📖 Understanding This Chart:**")
-            st.markdown("""
-                - **Green bars**: RRSP room you've used (contributions made)
-                - **Gray bars**: RRSP room left unused (missed opportunity)
-                - **Taller green = better**: You're maximizing tax-advantaged space
-                - **Goal**: Minimize gray, maximize green for optimal tax efficiency
-            """)
-            
-            # Calculate average utilization
-            total_used = rrsp_burndown[rrsp_burndown['Status'] == 'Used']['Amount'].sum()
-            total_available = rrsp_burndown['Amount'].sum()
-            utilization = (total_used / total_available * 100) if total_available > 0 else 0
-            st.metric("Avg RRSP Utilization", f"{utilization:.1f}%")
-        
-        with col_burn2:
-            st.markdown("**TFSA Room Utilization**")
-            
-            tfsa_burndown = df_burndown[df_burndown['Account'] == 'TFSA']
-            
-            tfsa_chart = alt.Chart(tfsa_burndown).mark_bar().encode(
-                x=alt.X('Year:N', title='Year'),
-                y=alt.Y('Amount:Q', title='TFSA Room ($)', stack='zero'),
-                color=alt.Color('Status:N',
-                    scale=alt.Scale(
-                        domain=['Used', 'Available'],
-                        range=['#3b82f6', '#e2e8f0']
-                    ),
-                    legend=alt.Legend(title="Room Status")
-                ),
-                tooltip=[
-                    alt.Tooltip('Year:N', title='Year'),
-                    alt.Tooltip('Status:N', title='Status'),
-                    alt.Tooltip('Amount:Q', title='Amount', format='$,.0f')
-                ]
-            ).properties(height=320)
-            
-            st.altair_chart(tfsa_chart, use_container_width=True)
-            
-            st.markdown("**📖 Understanding This Chart:**")
-            st.markdown("""
-                - **Blue bars**: TFSA room you've used (contributions made)
-                - **Gray bars**: TFSA room left unused (missed opportunity)
-                - **Why it matters**: Unused TFSA room accumulates, but you miss years of tax-free growth
-                - **Strategy tip**: Deploy your RRSP tax refunds here for compounding tax-free returns
-            """)
-            
-            # Calculate average utilization
-            total_used = tfsa_burndown[tfsa_burndown['Status'] == 'Used']['Amount'].sum()
-            total_available = tfsa_burndown['Amount'].sum()
-            utilization = (total_used / total_available * 100) if total_available > 0 else 0
-            st.metric("Avg TFSA Utilization", f"{utilization:.1f}%")
-        
-        st.divider()
-        
-        col_left, col_right = st.columns(2)
-        
-        with col_left:
-            st.markdown("**Income vs. Tax-Shielded Income**")
-            
-            description_box(
-                "Tax Efficiency Comparison",
-                "This side-by-side bar chart compares your gross income (what you earned) against your taxable income (what you pay tax on). "
-                "The difference represents income you've successfully shielded from taxes using RRSP contributions. "
-                "Bigger gaps mean more tax savings!"
-            )
-            
-            income_df = df_chart[['Year', 'Gross Income', 'Taxable Income']].melt(
-                'Year',
-                var_name='Category',
-                value_name='Amount'
-            )
-            
-            income_chart = alt.Chart(income_df).mark_bar(opacity=0.85).encode(
-                x=alt.X('Year:N', title='Year'),
-                y=alt.Y('Amount:Q', title='Income ($)'),
-                color=alt.Color('Category:N',
-                    scale=alt.Scale(
-                        domain=['Gross Income', 'Taxable Income'],
-                        range=['#94a3b8', '#3b82f6']
-                    ),
-                    legend=alt.Legend(title="Income Type")
-                ),
-                xOffset='Category:N'
-            ).properties(height=320)
-            
-            st.altair_chart(income_chart, use_container_width=True)
-            
-            st.markdown("**📖 Understanding This Chart:**")
-            st.markdown("""
-                - **Gray bars**: Your total gross income (before RRSP deductions)
-                - **Blue bars**: Your taxable income (after RRSP deductions)
-                - **The gap between bars**: Amount you've shielded from taxes
-                - **Bigger gap = bigger tax savings**: More income protected at your marginal rate
-                - **Goal**: Keep blue bars below $181,440 to avoid 47.97% Penthouse bracket
-            """)
-        
-        with col_right:
-            st.markdown("**Remaining Room Trajectory**")
-            
-            description_box(
-                "Year-End Room Availability",
-                "This chart shows how much contribution room you have left at the END of each year, after all contributions. "
-                "Room doesn't disappear - it carries forward! But leaving room unused means missing years of tax-advantaged growth. "
-                "Downward trends are normal as you consume room, but CRA adds new room each year."
-            )
-            
-            room_chart = alt.Chart(df_room).mark_area(
-                opacity=0.7,
-                line=True
-            ).encode(
-                x=alt.X('Year:N', title='Year'),
-                y=alt.Y('Remaining Room:Q', title='Remaining Room ($)'),
-                color=alt.Color('Account:N',
-                    scale=alt.Scale(
-                        domain=['RRSP', 'TFSA'],
-                        range=['#3b82f6', '#10b981']
-                    ),
-                    legend=alt.Legend(title="Account")
-                )
-            ).properties(height=320)
-            
-            st.altair_chart(room_chart, use_container_width=True)
-        
-        # Contribution trends
-        st.markdown("**Annual Contribution Trends**")
-        
-        description_box(
-            "Contribution Consistency Analysis",
-            "This line chart tracks your yearly contribution amounts for both RRSP and TFSA. "
-            "**Look for**: (1) Upward trends as income grows, (2) Consistent patterns showing disciplined saving, "
-            "(3) Gaps where you might have missed opportunities. "
-            "Steady or increasing contributions build long-term wealth through compound growth."
-        )
-        
-        contrib_df = df_chart[['Year', 'RRSP', 'TFSA']].melt(
-            'Year',
-            var_name='Account',
-            value_name='Contribution'
-        )
-        
-        contrib_chart = alt.Chart(contrib_df).mark_line(
-            point=alt.OverlayMarkDef(filled=False, fill="white", size=80)
-        ).encode(
-            x=alt.X('Year:N', title='Year'),
-            y=alt.Y('Contribution:Q', title='Annual Contribution ($)'),
-            color=alt.Color('Account:N',
-                scale=alt.Scale(
-                    domain=['RRSP', 'TFSA'],
-                    range=['#3b82f6', '#10b981']
-                )
-            ),
-            strokeWidth=alt.value(3)
-        ).properties(height=300)
-        
-        st.altair_chart(contrib_chart, use_container_width=True)
-
-# --- 6. PAGE: YEAR VIEW ---
-else:
-    selected_year = st.session_state.selected_year
-    year_data = all_history.get(str(selected_year), {})
-
-    with st.sidebar:
-        if st.button("⬅️ Back to Home", use_container_width=True):
-            st.session_state.current_page = "Home"
-            st.rerun()
-        
-        st.header(f"⚙️ {selected_year} Parameters")
-        
-        with st.form(key="input_form"):
-            st.markdown("### 💵 Income Parameters")
-            
-            t4_gross_income = st.number_input(
-                "Annual T4 Gross Income",
-                value=float(year_data.get("t4_gross_income", 0)),
-                step=5000.0,
-                min_value=0.0,
-                help="Total employment income from Box 14 of your T4"
-            )
-            
-            other_income = st.number_input(
-                "Other Income",
-                value=float(year_data.get("other_income", 0)),
-                step=1000.0,
-                min_value=0.0,
-                help="Additional taxable income (e.g., rental property net income after expenses)"
-            )
-            
-            base_salary = st.number_input(
-                "Annual Base Salary",
-                value=float(year_data.get("base_salary", 0)),
-                step=5000.0,
-                min_value=0.0,
-                help="Core salary used for percentage-based contributions"
-            )
-            
-            st.caption(f"💰 Total Gross Income: ${t4_gross_income + other_income:,.0f}")
-            
-            st.markdown("### 🎯 RRSP Strategy")
-            
-            biweekly_pct = st.slider(
-                "Biweekly RRSP Contribution (%)",
-                0.0, 18.0,
-                value=float(year_data.get("biweekly_pct", 0.0)),
-                step=0.5,
-                help="Percentage of base salary you contribute from each paycheck"
-            )
-            
-            employer_match_cap = st.slider(
-                "Employer Match Cap (% of Base Salary)",
-                0.0, 10.0,
-                value=float(year_data.get("employer_match", 4.0)),  # Legacy compatibility
-                step=0.5,
-                help="Employer matches 100% of YOUR contribution up to this % of base salary. Example: 4% cap means if you contribute 6%, employer only matches up to 4%"
-            )
-            
-            # Calculate actual employer contribution
-            employee_contribution_pct = biweekly_pct
-            employer_contribution_pct = min(employee_contribution_pct, employer_match_cap)
-            
-            st.caption(f"💡 Your contribution: {employee_contribution_pct:.1f}% (${base_salary * employee_contribution_pct / 100:,.0f}) | "
-                      f"Employer matches: {employer_contribution_pct:.1f}% (${base_salary * employer_contribution_pct / 100:,.0f})")
-            
-            if employee_contribution_pct > employer_match_cap:
-                st.warning(f"⚠️ You're contributing {employee_contribution_pct:.1f}% but employer only matches up to {employer_match_cap:.1f}%. "
-                          f"You're contributing ${base_salary * (employee_contribution_pct - employer_match_cap) / 100:,.0f} beyond the match.")
-            elif employee_contribution_pct < employer_match_cap:
-                missed_match = base_salary * (employer_match_cap - employee_contribution_pct) / 100
-                st.info(f"💰 Opportunity: Increase contribution to {employer_match_cap:.1f}% to get ${missed_match:,.0f} more in free employer money!")
-            
-            rrsp_lump_sum_optimization = st.number_input(
-                "RRSP Lump Sum (Tax Optimization)",
-                value=float(year_data.get("rrsp_lump_sum_optimization", 0)),
-                step=1000.0,
-                min_value=0.0,
-                help="Strategic deposit to optimize tax bracket positioning"
-            )
-            
-            rrsp_lump_sum_additional = st.number_input(
-                "RRSP Lump Sum (Additional Refund)",
-                value=float(year_data.get("rrsp_lump_sum_additional", 0)),
-                step=1000.0,
-                min_value=0.0,
-                help="Extra contributions to maximize tax refund beyond optimization"
-            )
-            
-            st.caption(f"💰 Total RRSP Lump Sum: ${rrsp_lump_sum_optimization + rrsp_lump_sum_additional:,.0f}")
-            
-            st.markdown("### 🌱 TFSA Strategy")
-            
-            tfsa_lump_sum = st.number_input(
-                "TFSA Lump Sum Deposit",
-                value=float(year_data.get("tfsa_lump_sum", 0)),
-                step=1000.0,
-                min_value=0.0,
-                help="Tax-free savings account contribution"
-            )
-            
-            st.markdown("### 📋 CRA Contribution Limits")
-            
-            # Get default values from previous year if available
-            prev_year = str(selected_year - 1)
-            default_rrsp_room = 0.0
-            default_tfsa_room = 0.0
-            
-            if prev_year in all_history:
-                prev_data = all_history[prev_year]
-                
-                # Calculate remaining room from previous year using helper function
-                prev_annual_rrsp = calculate_annual_rrsp(prev_data)
-                prev_tfsa_contrib = prev_data.get('tfsa_lump_sum', 0)
-                
-                prev_rrsp_room_remaining = max(0, prev_data.get('rrsp_room', 0) - prev_annual_rrsp)
-                prev_tfsa_room_remaining = max(0, prev_data.get('tfsa_room', 0) - prev_tfsa_contrib)
-                
-                # Add new room for current year (based on previous year's total gross income)
-                prev_t4_gross = prev_data.get('t4_gross_income', 0)
-                prev_other_income = prev_data.get('other_income', 0)
-                prev_total_gross = prev_t4_gross + prev_other_income
-                
-                new_rrsp_room = min(31560, prev_total_gross * 0.18)
-                new_tfsa_room = 7000
-                
-                default_rrsp_room = prev_rrsp_room_remaining + new_rrsp_room
-                default_tfsa_room = prev_tfsa_room_remaining + new_tfsa_room
-            
-            rrsp_room = st.number_input(
-                "Available RRSP Room",
-                value=float(year_data.get("rrsp_room", default_rrsp_room)),
-                step=1000.0,
-                min_value=0.0,
-                help="From your latest Notice of Assessment (auto-filled from previous year if available)"
-            )
-            
-            tfsa_room = st.number_input(
-                "Available TFSA Room",
-                value=float(year_data.get("tfsa_room", default_tfsa_room)),
-                step=1000.0,
-                min_value=0.0,
-                help="From CRA MyAccount (auto-filled from previous year if available)"
-            )
-            
-            if prev_year in all_history and default_rrsp_room > 0:
-                st.caption(f"ℹ️ Auto-calculated from {prev_year} carryover + new room")
-            
-            st.markdown("### 📈 Portfolio Tracking")
-            
-            # Calculate default values from previous year's end balances
-            prev_year = str(selected_year - 1)
-            default_rrsp_balance = 0.0
-            default_tfsa_balance = 0.0
-            
-            if prev_year in all_history:
-                prev_data = all_history[prev_year]
-                
-                # Get previous year's values
-                prev_target_cagr = prev_data.get("target_cagr", 7.0) / 100
-                prev_rrsp_start = prev_data.get("rrsp_balance_start", 0)
-                prev_tfsa_start = prev_data.get("tfsa_balance_start", 0)
-                
-                # Calculate previous year's contributions using helper function
-                prev_annual_rrsp = calculate_annual_rrsp(prev_data)
-                prev_tfsa_contrib = prev_data.get('tfsa_lump_sum', 0)
-                
-                # Calculate previous year's growth
-                prev_rrsp_growth = prev_rrsp_start * prev_target_cagr + prev_annual_rrsp * (prev_target_cagr / 2)
-                prev_tfsa_growth = prev_tfsa_start * prev_target_cagr + prev_tfsa_contrib * (prev_target_cagr / 2)
-                
-                # End balances become start balances for current year
-                default_rrsp_balance = prev_rrsp_start + prev_rrsp_growth + prev_annual_rrsp
-                default_tfsa_balance = prev_tfsa_start + prev_tfsa_growth + prev_tfsa_contrib
-            
-            rrsp_balance_start = st.number_input(
-                "RRSP Balance (Start of Year)",
-                value=float(year_data.get("rrsp_balance_start", default_rrsp_balance)),
-                step=1000.0,
-                min_value=0.0,
-                help="Total RRSP portfolio value on January 1st (auto-calculated from previous year if available)"
-            )
-            
-            tfsa_balance_start = st.number_input(
-                "TFSA Balance (Start of Year)",
-                value=float(year_data.get("tfsa_balance_start", default_tfsa_balance)),
-                step=1000.0,
-                min_value=0.0,
-                help="Total TFSA portfolio value on January 1st (auto-calculated from previous year if available)"
-            )
-            
-            if prev_year in all_history and default_rrsp_balance > 0:
-                st.caption(f"ℹ️ Auto-calculated from {prev_year} end-of-year projected balances")
-            
-            target_cagr = st.slider(
-                "Target Annual Return (CAGR %)",
-                0.0, 50.0,
-                value=float(year_data.get("target_cagr", 7.0)),
-                step=0.5,
-                help="Expected compound annual growth rate for investments (0-50%)"
-            )
-            
-            st.caption(f"📊 Using {target_cagr}% CAGR for growth projections")
-            
-            st.divider()
-            
-            # Form submit buttons
-            col_save, col_reset = st.columns(2)
-            
-            with col_save:
-                submitted = st.form_submit_button(
-                    "💾 Save",
-                    use_container_width=True,
-                    type="primary"
-                )
-            
-            with col_reset:
-                reset = st.form_submit_button(
-                    "🔄 Reset",
-                    use_container_width=True
-                )
-            
-            if submitted:
-                success = save_year_data(selected_year, {
-                    "t4_gross_income": t4_gross_income,
-                    "other_income": other_income,
-                    "base_salary": base_salary,
-                    "biweekly_pct": biweekly_pct,
-                    "employer_match": employer_match_cap,  # Save as employer_match for compatibility
-                    "rrsp_lump_sum_optimization": rrsp_lump_sum_optimization,
-                    "rrsp_lump_sum_additional": rrsp_lump_sum_additional,
-                    "tfsa_lump_sum": tfsa_lump_sum,
-                    "rrsp_room": rrsp_room,
-                    "tfsa_room": tfsa_room,
-                    "rrsp_balance_start": rrsp_balance_start,
-                    "tfsa_balance_start": tfsa_balance_start,
-                    "target_cagr": target_cagr
-                })
-                
-                if success:
-                    st.session_state.saved_flag = True
-                    st.rerun()
-            
-            if reset:
-                delete_year_data(selected_year)
-                st.rerun()
-        
-        if st.session_state.get("saved_flag"):
-            st.success("✓ Strategy saved successfully!")
-            st.session_state.saved_flag = False
-    
-    # Main content area - Calculations
-    other_income = year_data.get("other_income", 0)
-    total_gross_income = t4_gross_income + other_income
-    
-    # Calculate RRSP contributions with correct employer matching logic
-    # Employer matches 100% of employee contribution up to the cap
-    employee_rrsp_contribution = base_salary * (biweekly_pct / 100)
-    employer_rrsp_contribution = base_salary * (min(biweekly_pct, employer_match_cap) / 100)
-    annual_rrsp_periodic = employee_rrsp_contribution + employer_rrsp_contribution
-    
-    rrsp_lump_sum = rrsp_lump_sum_optimization + rrsp_lump_sum_additional
-    total_rrsp_contributions = annual_rrsp_periodic + rrsp_lump_sum
-    taxable_income = max(0, total_gross_income - total_rrsp_contributions)
-    
-    # Portfolio calculations
-    rrsp_balance_start = year_data.get("rrsp_balance_start", 0)
-    tfsa_balance_start = year_data.get("tfsa_balance_start", 0)
-    target_cagr
